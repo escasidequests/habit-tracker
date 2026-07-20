@@ -1,0 +1,8 @@
+# Don't publish the source recordings or the raw Airtable exports
+*.mov
+*.MP4
+*.mp4
+*.csv
+
+# Contains real habit names + dates — paste into Supabase locally, never push
+seed.sql

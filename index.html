@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111418" />
+  <title>Habit Tracker</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Login -->
+  <section id="auth" class="auth hidden">
+    <form id="auth-form" class="auth-card">
+      <h1>Habit Tracker</h1>
+      <input id="email" type="email" placeholder="Email" autocomplete="email" required />
+      <input id="password" type="password" placeholder="Password" autocomplete="current-password" required />
+      <button id="signin" type="submit">Sign in</button>
+      <button id="signup" type="button" class="secondary">Create account</button>
+      <p id="auth-msg" class="msg"></p>
+    </form>
+  </section>
+
+  <!-- App -->
+  <section id="app" class="hidden">
+    <header class="topbar">
+      <h1>Habits</h1>
+      <div class="topbar-actions">
+        <button id="add-habit" class="pill">+ Habit</button>
+        <button id="signout" class="pill secondary">Sign out</button>
+      </div>
+    </header>
+    <div id="grid" class="grid-wrap"></div>
+    <p id="empty" class="msg hidden">No habits yet — tap “+ Habit” to add one.</p>
+  </section>
+
+  <!-- Add-habit modal -->
+  <div id="modal" class="modal hidden">
+    <form id="habit-form" class="modal-card">
+      <h2>New habit</h2>
+      <label>Emoji <input id="h-emoji" maxlength="8" value="✅" /></label>
+      <label>Name <input id="h-name" required /></label>
+      <label>Type
+        <select id="h-type">
+          <option value="good">Good Habits</option>
+          <option value="bad">Bad Habits</option>
+          <option value="neutral">Neutral</option>
+          <option value="people_hangcall">People — Hang/Call</option>
+          <option value="people_text">People — Text</option>
+        </select>
+      </label>
+      <label class="row">
+        <input id="h-remind" type="checkbox" /> Remind me if it's been over
+        <input id="h-threshold" type="number" min="1" value="7" class="num" /> days
+      </label>
+      <div class="modal-actions">
+        <button type="button" id="h-cancel" class="secondary">Cancel</button>
+        <button type="submit">Add</button>
+      </div>
+    </form>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
+</body>
+</html>

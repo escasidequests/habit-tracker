@@ -1,0 +1,85 @@
+:root {
+  --bg: #111418;
+  --card: #1b2028;
+  --card-2: #232a34;
+  --text: #e8ecf1;
+  --muted: #93a1b0;
+  --good: #37b26b;
+  --bad: #e5533c;
+  --neutral: #7f8b98;
+  --people: #4f8cf5;
+  --overdue: #f0b429;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+.hidden { display: none !important; }
+.msg { color: var(--muted); text-align: center; }
+
+/* Auth */
+.auth { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.auth-card {
+  width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 12px;
+  background: var(--card); padding: 28px; border-radius: var(--radius);
+}
+.auth-card h1 { margin: 0 0 8px; font-size: 22px; text-align: center; }
+.auth-card input, .modal-card input, .modal-card select {
+  background: var(--card-2); border: 1px solid #313a46; color: var(--text);
+  padding: 12px; border-radius: 10px; font-size: 16px;
+}
+button {
+  background: var(--people); color: #fff; border: 0; padding: 12px; border-radius: 10px;
+  font-size: 16px; font-weight: 600; cursor: pointer;
+}
+button.secondary { background: transparent; border: 1px solid #3a4552; color: var(--text); }
+
+/* Top bar */
+.topbar {
+  position: sticky; top: 0; z-index: 5; background: var(--bg);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px; border-bottom: 1px solid #232a34;
+}
+.topbar h1 { font-size: 20px; margin: 0; }
+.topbar-actions { display: flex; gap: 8px; }
+.pill { padding: 8px 14px; font-size: 14px; border-radius: 999px; }
+
+/* Grid */
+.grid-wrap { padding: 16px; display: flex; flex-direction: column; gap: 22px; }
+.group h2 {
+  font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); margin: 0 0 10px;
+}
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.tile {
+  position: relative; background: var(--card); border-radius: var(--radius);
+  padding: 14px; text-align: center; cursor: pointer; border: 2px solid transparent;
+  transition: transform .06s ease;
+  border-top: 4px solid var(--type, var(--neutral));
+}
+.tile:active { transform: scale(.97); }
+.tile.overdue { border-color: var(--overdue); }
+.tile .emoji { font-size: 30px; line-height: 1; cursor: pointer; }
+.tile .name { font-size: 14px; font-weight: 600; margin: 8px 0 4px; }
+.tile .stat { font-size: 12px; color: var(--muted); }
+.tile .count { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.tile .more {
+  position: absolute; top: 6px; right: 8px; background: none; color: var(--muted);
+  padding: 2px 6px; font-size: 16px; border-radius: 6px; line-height: 1;
+}
+.tile.overdue .stat { color: var(--overdue); font-weight: 600; }
+
+/* Modal */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: grid; place-items: center; padding: 20px; z-index: 10; }
+.modal-card { width: 100%; max-width: 360px; background: var(--card); padding: 22px; border-radius: var(--radius); display: flex; flex-direction: column; gap: 12px; }
+.modal-card h2 { margin: 0; font-size: 18px; }
+.modal-card label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--muted); }
+.modal-card label.row { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text); }
+.modal-card .num { width: 60px; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
