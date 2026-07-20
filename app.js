@@ -61,13 +61,13 @@ $("signout").addEventListener("click", async () => {
 async function loadAndRender() {
   const [{ data: h, error: he }, { data: en, error: ee }] = await Promise.all([
     db.from("habits").select("*").order("sort_order"),
-    db.from("entries").select("habit_id, logged_at"),
+    db.from("entries").select("id, habit_id, logged_at"),
   ]);
   if (he || ee) { alert((he || ee).message); return; }
   habits = h || [];
   entriesByHabit = {};
   (en || []).forEach((row) => {
-    (entriesByHabit[row.habit_id] ||= []).push(new Date(row.logged_at));
+    (entriesByHabit[row.habit_id] ||= []).push({ id: row.id, at: new Date(row.logged_at) });
   });
   render();
 }
@@ -75,8 +75,14 @@ async function loadAndRender() {
 function stats(habitId) {
   const list = entriesByHabit[habitId] || [];
   if (!list.length) return { count: 0, daysSince: null };
-  const last = Math.max(...list.map((d) => d.getTime()));
+  const last = Math.max(...list.map((e) => e.at.getTime()));
   return { count: list.length, daysSince: Math.floor((Date.now() - last) / DAY) };
+}
+
+function sinceText(daysSince) {
+  return daysSince === null ? "never logged"
+    : daysSince === 0 ? "today"
+    : `${daysSince} day${daysSince === 1 ? "" : "s"} ago`;
 }
 
 function isOverdue(h, daysSince) {
@@ -110,20 +116,18 @@ function render() {
     for (const h of inType) {
       const { count, daysSince } = stats(h.id);
       const overdue = isOverdue(h, daysSince);
-      const sinceText = daysSince === null ? "never logged"
-        : daysSince === 0 ? "today"
-        : `${daysSince} day${daysSince === 1 ? "" : "s"} ago`;
       const tile = document.createElement("div");
       tile.className = "tile" + (overdue ? " overdue" : "");
+      tile.dataset.habitId = h.id;
       tile.style.setProperty("--type", t.color);
       tile.innerHTML = `
         <button class="more" title="Backdate / delete">⋯</button>
         <div class="emoji" title="Change emoji">${h.emoji}</div>
         <div class="name">${escapeHtml(h.name)}</div>
-        <div class="stat">${sinceText}</div>
+        <div class="stat">${sinceText(daysSince)}</div>
         <div class="count">${count}×${overdue ? " · due" : ""}</div>`;
 
-      tile.addEventListener("click", () => logNow(h.id));
+      tile.addEventListener("click", () => logNow(h.id, tile));
       tile.querySelector(".emoji").addEventListener("click", (e) => { e.stopPropagation(); changeEmoji(h); });
       tile.querySelector(".more").addEventListener("click", (e) => { e.stopPropagation(); moreMenu(h); });
       tiles.appendChild(tile);
@@ -138,16 +142,85 @@ function escapeHtml(s) {
 
 /* ---------- Actions ---------- */
 
-async function logNow(habitId) { await addEntry(habitId, new Date()); }
+async function logNow(habitId, tile) {
+  buzz();
+  popTile(tile);
+  const row = await insertEntry(habitId, new Date());
+  if (!row) return;
+  updateTile(habitId);
+  const h = habits.find((x) => x.id === habitId);
+  showToast(`Logged ${h.emoji} ${h.name}`, () => undoLog(habitId, row.id));
+}
 
-async function addEntry(habitId, when) {
+// Insert an entry; returns the new row ({id}) or null on error.
+async function insertEntry(habitId, when) {
   const { data: u } = await db.auth.getUser();
-  const { error } = await db.from("entries").insert({
+  const { data, error } = await db.from("entries").insert({
     habit_id: habitId, user_id: u.user.id, logged_at: when.toISOString(),
-  });
+  }).select("id").single();
+  if (error) { alert(error.message); return null; }
+  (entriesByHabit[habitId] ||= []).push({ id: data.id, at: when });
+  return data;
+}
+
+// Backdated log — full re-render since it can change ordering.
+async function addEntry(habitId, when) {
+  const row = await insertEntry(habitId, when);
+  if (row) render();
+}
+
+async function undoLog(habitId, entryId) {
+  const { error } = await db.from("entries").delete().eq("id", entryId);
   if (error) return alert(error.message);
-  (entriesByHabit[habitId] ||= []).push(when);
-  render();
+  entriesByHabit[habitId] = (entriesByHabit[habitId] || []).filter((e) => e.id !== entryId);
+  updateTile(habitId);
+  hideToast();
+}
+
+/* ---------- Feedback helpers ---------- */
+
+function buzz() { if (navigator.vibrate) navigator.vibrate(15); }
+
+function popTile(tile) {
+  if (!tile) return;
+  tile.classList.remove("pop");
+  void tile.offsetWidth;            // restart the animation if tapped again quickly
+  tile.classList.add("pop");
+  const plus = document.createElement("div");
+  plus.className = "float-plus";
+  plus.textContent = "+1";
+  tile.appendChild(plus);
+  setTimeout(() => { tile.classList.remove("pop"); plus.remove(); }, 800);
+}
+
+// Update one tile's stat/count/overdue in place, without rebuilding the grid.
+function updateTile(habitId) {
+  const tile = document.querySelector(`.tile[data-habit-id="${habitId}"]`);
+  if (!tile) return;
+  const h = habits.find((x) => x.id === habitId);
+  const { count, daysSince } = stats(habitId);
+  const overdue = isOverdue(h, daysSince);
+  tile.classList.toggle("overdue", overdue);
+  tile.querySelector(".stat").textContent = sinceText(daysSince);
+  tile.querySelector(".count").textContent = `${count}×${overdue ? " · due" : ""}`;
+}
+
+let toastTimer = null;
+function showToast(msg, onUndo) {
+  const toast = $("toast");
+  $("toast-msg").textContent = msg;
+  $("toast-undo").onclick = onUndo;
+  toast.classList.remove("hidden");
+  void toast.offsetWidth;
+  toast.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 5000);
+}
+function hideToast() {
+  const toast = $("toast");
+  toast.classList.remove("show");
+  clearTimeout(toastTimer);
+  setTimeout(() => toast.classList.add("hidden"), 200);
 }
 
 async function changeEmoji(h) {
