@@ -46,6 +46,16 @@
         </div>
       </header>
       <nav id="tabs" class="tabs"></nav>
+      <div id="controls" class="controls hidden">
+        <input id="search" type="search" placeholder="Search habits…" autocomplete="off" />
+        <select id="sort" title="Sort habits">
+          <option value="manual">Manual order</option>
+          <option value="activity">Latest activity</option>
+          <option value="created">Date added</option>
+          <option value="alpha">A → Z</option>
+        </select>
+        <button id="reorder" type="button" class="pill secondary hidden">Reorder</button>
+      </div>
     </div>
     <div id="install-tip" class="banner hidden">
       <span>📲 On iPhone, open this in <b>Safari</b>, then tap Share → <b>Add to Home Screen</b> to get reminders.</span>
@@ -69,6 +79,7 @@
       <button type="button" id="open-suggestions" class="suggest-btn">✨ Browse suggestions <span>›</span></button>
       <label>Emoji <input id="h-emoji" maxlength="8" value="✅" /></label>
       <label>Name <input id="h-name" required /></label>
+      <label>Color <div id="h-color" class="swatches"></div></label>
       <label>Type
         <select id="h-type">
           <option value="good">Good Habits</option>

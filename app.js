@@ -55,10 +55,20 @@ const DAY = 86400000;
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "18";
+const APP_BUILD = "19";
+
+// Optional per-habit accent colors. null = fall back to the habit's type color.
+const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
 
 let habits = [];
-let entriesByHabit = {}; // habit_id -> [logged_at Date, ...]
+let entriesByHabit = {}; // habit_id -> [{id, at, note}, ...]
+
+// UI state (sort_mode is synced via user_prefs; the rest are session-local).
+let sortMode = "manual";   // manual | activity | created | alpha
+let searchTerm = "";
+let showHidden = false;
+let reorderMode = false;
+let newHabitColor = null;  // color chosen in the add-habit form
 
 /* ---------- Auth ---------- */
 
@@ -86,8 +96,7 @@ $("install-dismiss").addEventListener("click", () => {
 
 // Empty-state shortcut straight into the suggestions browser.
 $("empty-suggest").addEventListener("click", () => {
-  $("habit-form").reset();
-  $("modal").classList.remove("hidden");
+  openAddHabit();
   openSuggestions();
 });
 
@@ -179,15 +188,34 @@ function friendlyAuthError(error) {
 async function loadAndRender() {
   const [{ data: h, error: he }, { data: en, error: ee }] = await Promise.all([
     db.from("habits").select("*").order("sort_order"),
-    db.from("entries").select("id, habit_id, logged_at"),
+    db.from("entries").select("id, habit_id, logged_at, note"),
   ]);
   if (he || ee) { alert((he || ee).message); return; }
   habits = h || [];
   entriesByHabit = {};
   (en || []).forEach((row) => {
-    (entriesByHabit[row.habit_id] ||= []).push({ id: row.id, at: new Date(row.logged_at) });
+    (entriesByHabit[row.habit_id] ||= []).push({ id: row.id, at: new Date(row.logged_at), note: row.note || "" });
   });
+  await loadPrefs();
   render();
+}
+
+// Cross-device UI preferences (currently just the sort mode).
+async function loadPrefs() {
+  try {
+    const { data } = await db.from("user_prefs").select("sort_mode").maybeSingle();
+    if (data?.sort_mode) sortMode = data.sort_mode;
+  } catch (_) { /* table may not exist yet — keep the default */ }
+}
+
+async function saveSortMode(mode) {
+  sortMode = mode;
+  try {
+    const { data: u } = await db.auth.getUser();
+    await db.from("user_prefs").upsert(
+      { user_id: u.user.id, sort_mode: mode, updated_at: new Date().toISOString() },
+      { onConflict: "user_id" });
+  } catch (err) { console.warn("Couldn't save sort preference:", err.message); }
 }
 
 function stats(habitId) {
@@ -204,35 +232,94 @@ function sinceText(daysSince) {
 }
 
 function isOverdue(h, daysSince) {
+  if (h.paused) return false; // paused habits never nudge
   if (!h.reminder_enabled || !h.reminder_threshold_days) return false;
   return daysSince === null || daysSince > h.reminder_threshold_days;
+}
+
+// The accent color a habit renders with: its custom color, or its type color.
+function habitColor(h) {
+  if (h.color) return h.color;
+  const t = TYPES.find((x) => x.key === h.type);
+  return t ? t.color : "var(--neutral)";
+}
+
+// Sort within a type group: pinned first, then by the chosen sort mode.
+function sortForGroup(list) {
+  const byMode = {
+    manual: (a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name),
+    activity: (a, b) => {
+      const da = stats(a.id).daysSince, dbb = stats(b.id).daysSince;
+      if (da === null && dbb === null) return a.name.localeCompare(b.name);
+      if (da === null) return 1;   // never-logged sinks to the bottom
+      if (dbb === null) return -1;
+      return da - dbb;             // most recent activity first
+    },
+    created: (a, b) => new Date(a.created_at) - new Date(b.created_at),
+    alpha: (a, b) => a.name.localeCompare(b.name),
+  };
+  const cmp = byMode[sortMode] || byMode.manual;
+  return list.slice().sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || cmp(a, b));
 }
 
 /* ---------- Render ---------- */
 
 function render() {
+  // Reorder only makes sense in manual order on a grouped (non-Due) view.
+  if (reorderMode && (currentView === "due" || sortMode !== "manual")) reorderMode = false;
+
   renderTabs();
+  renderControls();
   const grid = $("grid");
   grid.innerHTML = "";
+  grid.classList.toggle("reordering", reorderMode);
   $("empty").classList.toggle("hidden", habits.length > 0);
   if (!habits.length) return;
 
   const view = VIEWS.find((v) => v.key === currentView) || VIEWS[0];
+  const q = searchTerm.trim().toLowerCase();
+  const matches = (h) => !q || h.name.toLowerCase().includes(q);
+
+  if (reorderMode) grid.appendChild(hintEl("Drag tiles to reorder — tap Done when finished."));
 
   if (view.key === "due") {
-    const due = habits.filter((h) => isOverdue(h, stats(h.id).daysSince)).sort(dueSort);
+    const due = habits.filter((h) => matches(h) && isOverdue(h, stats(h.id).daysSince)).sort(dueSort);
     if (due.length) renderGroup(grid, "Due now", due);
-    else grid.appendChild(msgEl("Nothing due right now — you're all caught up. 🎉"));
+    else grid.appendChild(msgEl(q ? "No matches due." : "Nothing due right now — you're all caught up. 🎉"));
     return;
   }
 
   let any = false;
   for (const t of TYPES) {
     if (!view.types.includes(t.key)) continue;
-    const inType = habits.filter((h) => h.type === t.key).sort(overdueFirstThenName);
-    if (inType.length) { renderGroup(grid, t.label, inType); any = true; }
+    const inType = habits.filter((h) => h.type === t.key && matches(h) && (showHidden || !h.hidden));
+    if (inType.length) { renderGroup(grid, t.label, sortForGroup(inType)); any = true; }
   }
-  if (!any) grid.appendChild(msgEl("No habits here yet — add one with “+ Habit”."));
+  const hiddenInView = habits.filter((h) => view.types.includes(h.type) && matches(h) && h.hidden).length;
+  if (!any && !hiddenInView) grid.appendChild(msgEl(q ? "No matching habits." : "No habits here yet — add one with “+ Habit”."));
+  if (hiddenInView) {
+    const btn = document.createElement("button");
+    btn.className = "show-hidden";
+    btn.textContent = showHidden ? "Hide hidden habits" : `Show ${hiddenInView} hidden`;
+    btn.addEventListener("click", () => { showHidden = !showHidden; render(); });
+    grid.appendChild(btn);
+  }
+}
+
+// Search box is always shown when habits exist; sort + reorder only on grouped views.
+function renderControls() {
+  const bar = $("controls");
+  const has = habits.length > 0;
+  bar.classList.toggle("hidden", !has);
+  if (!has) return;
+  const onDue = currentView === "due";
+  const sortSel = $("sort");
+  sortSel.classList.toggle("hidden", onDue);
+  sortSel.value = sortMode;
+  const reorderBtn = $("reorder");
+  reorderBtn.classList.toggle("hidden", onDue || sortMode !== "manual");
+  reorderBtn.classList.toggle("active", reorderMode);
+  reorderBtn.textContent = reorderMode ? "Done" : "Reorder";
 }
 
 // Tab bar across the top; the "Due" tab carries a live count badge.
@@ -264,21 +351,67 @@ function renderGroup(grid, label, list) {
 }
 
 function buildTile(h) {
-  const t = TYPES.find((x) => x.key === h.type);
   const { count, daysSince } = stats(h.id);
   const overdue = isOverdue(h, daysSince);
   const tile = document.createElement("div");
-  tile.className = "tile" + (overdue ? " overdue" : "");
+  tile.className = "tile" + (overdue ? " overdue" : "") + (h.paused ? " paused" : "") + (h.hidden ? " is-hidden" : "");
   tile.dataset.habitId = h.id;
-  tile.style.setProperty("--type", t ? t.color : "var(--neutral)");
+  tile.style.setProperty("--type", habitColor(h));
+  const flags = (h.pinned ? "📌" : "") + (h.paused ? "⏸" : "");
   tile.innerHTML = `
     <span class="due-badge">DUE</span>
+    ${flags ? `<span class="tile-flags">${flags}</span>` : ""}
     <div class="emoji">${h.emoji}</div>
     <div class="name">${escapeHtml(h.name)}</div>
     <div class="stat">${sinceText(daysSince)}</div>
     <div class="count">${count}×</div>`;
-  attachTileGestures(tile, h);
+  if (reorderMode) attachReorderGestures(tile);
+  else attachTileGestures(tile, h);
   return tile;
+}
+
+// Drag-to-reorder (manual sort only). Reorders tiles within their group, then
+// persists the new global sort_order. Pointer-based so it works on touch + mouse.
+let dragEl = null;
+function attachReorderGestures(tile) {
+  tile.addEventListener("pointerdown", (e) => {
+    if (e.button && e.button !== 0) return;
+    dragEl = tile;
+    tile.classList.add("dragging");
+    tile.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".tile");
+      if (!over || over === dragEl || over.parentElement !== dragEl.parentElement) return;
+      const r = over.getBoundingClientRect();
+      const after = (ev.clientY - r.top) > r.height / 2 || (ev.clientX - r.left) > r.width / 2;
+      over.parentElement.insertBefore(dragEl, after ? over.nextSibling : over);
+    };
+    const up = (ev) => {
+      tile.releasePointerCapture(ev.pointerId);
+      tile.classList.remove("dragging");
+      tile.removeEventListener("pointermove", move);
+      tile.removeEventListener("pointerup", up);
+      tile.removeEventListener("pointercancel", up);
+      dragEl = null;
+      persistOrder();
+    };
+    tile.addEventListener("pointermove", move);
+    tile.addEventListener("pointerup", up);
+    tile.addEventListener("pointercancel", up);
+  });
+}
+
+// Reassign sort_order to match the tiles' current top-to-bottom visual order.
+async function persistOrder() {
+  const ids = Array.from(document.querySelectorAll("#grid .tile[data-habit-id]")).map((t) => t.dataset.habitId);
+  for (let i = 0; i < ids.length; i++) {
+    const h = habits.find((x) => x.id === ids[i]);
+    if (h && h.sort_order !== i) {
+      h.sort_order = i;
+      const { error } = await db.from("habits").update({ sort_order: i }).eq("id", h.id);
+      if (error) { alert(error.message); return; }
+    }
+  }
 }
 
 // Tap = log instantly. Press-and-hold (or right-click) = options popup.
@@ -317,11 +450,15 @@ function openTileMenu(h, tile) {
     <div class="popover-card">
       <div class="popover-title">${h.emoji} ${escapeHtml(h.name)}</div>
       <button data-act="log">Log a new entry now</button>
+      <button data-act="pin" class="secondary">${h.pinned ? "📌 Unpin" : "📌 Pin to top"}</button>
+      <button data-act="pause" class="secondary">${h.paused ? "▶️ Resume" : "⏸ Pause"}</button>
       <button data-act="open" class="secondary">Open habit screen</button>
       <button data-act="cancel" class="ghost">Cancel</button>
     </div>`;
   overlay.addEventListener("click", (e) => { if (e.target === overlay) closeTileMenu(); });
   overlay.querySelector('[data-act="log"]').addEventListener("click", () => { closeTileMenu(); logNow(h.id, tile); });
+  overlay.querySelector('[data-act="pin"]').addEventListener("click", () => { closeTileMenu(); togglePin(h); });
+  overlay.querySelector('[data-act="pause"]').addEventListener("click", () => { closeTileMenu(); togglePause(h); });
   overlay.querySelector('[data-act="open"]').addEventListener("click", () => { closeTileMenu(); openHabitScreen(h.id); });
   overlay.querySelector('[data-act="cancel"]').addEventListener("click", closeTileMenu);
   document.body.appendChild(overlay);
@@ -369,24 +506,34 @@ function renderHabitScreen() {
   if (!entries.length) {
     historyHtml = '<p class="msg">No logs yet.</p>';
   } else if (isTouch) {
-    // Swipe a row left to reveal a Delete button.
+    // Swipe a row left to reveal a Delete button; tap 📝 to add/edit a note.
     historyHtml = entries.map((e) => `
       <div class="swipe" data-id="${e.id}">
         <button class="swipe-del" data-id="${e.id}">Delete</button>
-        <div class="swipe-content">${fmtDateTime(e.at)}</div>
+        <div class="swipe-content">
+          <div class="hist-main">
+            <span>${fmtDateTime(e.at)}</span>
+            ${e.note ? `<span class="hist-note">${escapeHtml(e.note)}</span>` : ""}
+          </div>
+          <button class="note-btn${e.note ? " has-note" : ""}" data-note="${e.id}">📝</button>
+        </div>
       </div>`).join("");
   } else {
-    // Check rows, then Delete selected.
+    // Check rows, then Delete selected; 📝 to add/edit a note.
     historyHtml = `
       <div class="bulk-bar">
         <button data-act="del-selected" disabled>Delete selected</button>
         <span class="sel-count"></span>
       </div>` +
       entries.map((e) => `
-        <label class="hist-row select">
-          <span>${fmtDateTime(e.at)}</span>
+        <div class="hist-row select">
+          <div class="hist-main">
+            <span>${fmtDateTime(e.at)}</span>
+            ${e.note ? `<span class="hist-note">${escapeHtml(e.note)}</span>` : ""}
+          </div>
+          <button class="note-btn${e.note ? " has-note" : ""}" data-note="${e.id}">📝</button>
           <input type="checkbox" class="hist-check" data-id="${e.id}" />
-        </label>`).join("");
+        </div>`).join("");
   }
 
   panel.innerHTML = `
@@ -425,10 +572,14 @@ function renderHabitScreen() {
             ${TYPES.map((tt) => `<option value="${tt.key}"${tt.key === h.type ? " selected" : ""}>${tt.label}</option>`).join("")}
           </select>
         </label>
+        <label>Color <div id="hs-color" class="swatches"></div></label>
         <label class="row">
           <input id="hs-remind" type="checkbox"${h.reminder_enabled ? " checked" : ""} /> Remind me if it's been over
           <input id="hs-threshold" type="number" min="1" class="num" value="${h.reminder_threshold_days || 7}" /> days
         </label>
+        <label class="row"><input id="hs-pinned" type="checkbox"${h.pinned ? " checked" : ""} /> Pin to top</label>
+        <label class="row"><input id="hs-paused" type="checkbox"${h.paused ? " checked" : ""} /> Paused (no reminders)</label>
+        <label class="row"><input id="hs-hidden" type="checkbox"${h.hidden ? " checked" : ""} /> Hide from main view</label>
         <button data-act="save">Save changes</button>
       </section>
 
@@ -436,6 +587,10 @@ function renderHabitScreen() {
     </div>`;
 
   panel.querySelector('[data-act="back"]').addEventListener("click", closeHabitScreen);
+
+  const getColor = renderSwatches(panel.querySelector("#hs-color"), h.color, null);
+  panel.querySelectorAll("[data-note]").forEach((b) =>
+    b.addEventListener("click", (e) => { e.stopPropagation(); openNoteEditor(h.id, b.dataset.note); }));
 
   panel.querySelector('[data-act="lognow"]').addEventListener("click", async () => {
     buzz();
@@ -478,8 +633,12 @@ function renderHabitScreen() {
       name: $("hs-name").value.trim(),
       emoji: $("hs-emoji").value.trim() || "✅",
       type: $("hs-type").value,
+      color: getColor(),
       reminder_enabled: remind,
       reminder_threshold_days: remind ? Number($("hs-threshold").value) : null,
+      pinned: $("hs-pinned").checked,
+      paused: $("hs-paused").checked,
+      hidden: $("hs-hidden").checked,
     };
     if (!patch.name) return alert("Name can't be empty.");
     const { error } = await db.from("habits").update(patch).eq("id", h.id);
@@ -556,13 +715,6 @@ function escapeAttr(s) {
   return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
-// overdue first, then alphabetical — used within a type group.
-function overdueFirstThenName(a, b) {
-  const oa = isOverdue(a, stats(a.id).daysSince), ob = isOverdue(b, stats(b.id).daysSince);
-  if (oa !== ob) return oa ? -1 : 1;
-  return a.name.localeCompare(b.name);
-}
-
 // Due view: never-logged first, then longest-overdue first.
 function dueSort(a, b) {
   const da = stats(a.id).daysSince, dbb = stats(b.id).daysSince;
@@ -578,6 +730,83 @@ function msgEl(text) {
   p.style.marginTop = "40px";
   p.textContent = text;
   return p;
+}
+
+function hintEl(text) {
+  const p = document.createElement("p");
+  p.className = "reorder-hint";
+  p.textContent = text;
+  return p;
+}
+
+// Renders a row of color swatches into `container`. Returns a getter for the
+// currently-selected color (null = "no custom color, use type color").
+function renderSwatches(container, selected, onChange) {
+  let current = selected || null;
+  container.innerHTML = "";
+  const make = (c) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "swatch" + (c ? "" : " none") + ((c || null) === current ? " selected" : "");
+    if (c) b.style.setProperty("--sw", c);
+    b.addEventListener("click", () => {
+      current = c || null;
+      container.querySelectorAll(".swatch").forEach((s) => s.classList.remove("selected"));
+      b.classList.add("selected");
+      if (onChange) onChange(current);
+    });
+    return b;
+  };
+  container.appendChild(make(null)); // "no custom color"
+  COLORS.forEach((c) => container.appendChild(make(c)));
+  return () => current;
+}
+
+async function togglePin(h) {
+  const v = !h.pinned;
+  const { error } = await db.from("habits").update({ pinned: v }).eq("id", h.id);
+  if (error) return alert(error.message);
+  h.pinned = v; render();
+  showToast(v ? `Pinned ${h.emoji} ${h.name}` : "Unpinned");
+}
+
+async function togglePause(h) {
+  const v = !h.paused;
+  const { error } = await db.from("habits").update({ paused: v }).eq("id", h.id);
+  if (error) return alert(error.message);
+  h.paused = v; render();
+  showToast(v ? `Paused ${h.emoji} ${h.name}` : `Resumed ${h.emoji} ${h.name}`);
+}
+
+// Edit or clear a single entry's note (opened from the habit screen's history).
+function openNoteEditor(habitId, entryId) {
+  const entry = (entriesByHabit[habitId] || []).find((x) => x.id === entryId);
+  if (!entry) return;
+  const overlay = document.createElement("div");
+  overlay.id = "note-editor";
+  overlay.className = "popover show";
+  overlay.innerHTML = `
+    <div class="popover-card note-editor">
+      <div class="popover-title">📝 Note</div>
+      <textarea id="note-text" placeholder="Add a note for this log…">${escapeHtml(entry.note || "")}</textarea>
+      <div class="row">
+        <button data-act="cancel" class="ghost">Cancel</button>
+        <button data-act="save">Save</button>
+      </div>
+    </div>`;
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
+  overlay.querySelector('[data-act="save"]').addEventListener("click", async () => {
+    const note = $("note-text").value.trim();
+    const { error } = await db.from("entries").update({ note: note || null }).eq("id", entryId);
+    if (error) return alert(error.message);
+    entry.note = note;
+    close();
+    renderHabitScreen();
+  });
+  document.body.appendChild(overlay);
+  $("note-text").focus();
 }
 
 function escapeHtml(s) {
@@ -669,8 +898,22 @@ function hideToast() {
 
 /* ---------- Add habit modal ---------- */
 
-$("add-habit").addEventListener("click", () => { $("habit-form").reset(); $("modal").classList.remove("hidden"); });
+$("add-habit").addEventListener("click", openAddHabit);
 $("h-cancel").addEventListener("click", () => { $("modal").classList.add("hidden"); $("habit-form").reset(); });
+
+// Open the New-habit form with a fresh color picker.
+function openAddHabit() {
+  $("habit-form").reset();
+  $("h-emoji").value = "✅";
+  newHabitColor = null;
+  renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
+  $("modal").classList.remove("hidden");
+}
+
+/* ---------- Search / sort / reorder controls ---------- */
+$("search").addEventListener("input", (e) => { searchTerm = e.target.value; render(); });
+$("sort").addEventListener("change", (e) => { saveSortMode(e.target.value); render(); });
+$("reorder").addEventListener("click", () => { reorderMode = !reorderMode; render(); });
 
 /* ---------- Suggested habits ---------- */
 
@@ -732,6 +975,8 @@ function prefillHabitForm(s) {
   $("h-type").value = s.type;
   $("h-remind").checked = !!s.days;
   $("h-threshold").value = s.days || 7;
+  newHabitColor = null;
+  renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
 }
 
 $("habit-form").addEventListener("submit", async (e) => {
@@ -743,6 +988,7 @@ $("habit-form").addEventListener("submit", async (e) => {
     name: $("h-name").value.trim(),
     type: $("h-type").value,
     emoji: $("h-emoji").value.trim() || "✅",
+    color: newHabitColor,
     reminder_enabled: remind,
     reminder_threshold_days: remind ? Number($("h-threshold").value) : null,
     sort_order: habits.length,
@@ -798,7 +1044,7 @@ async function renderNotifScreen() {
 
   // Current reminder settings (null if the table/row isn't there yet).
   let settings = null;
-  try { settings = (await db.from("push_settings").select("send_hour, timezone").maybeSingle()).data; } catch (_) {}
+  try { settings = (await db.from("push_settings").select("send_hour, timezone, quiet_mode").maybeSingle()).data; } catch (_) {}
   const tz = settings?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   let guidance = "";
@@ -838,6 +1084,7 @@ async function renderNotifScreen() {
       ${subscribed ? `
       <section class="card-section">
         <h3>Reminder schedule</h3>
+        <label class="row"><input id="ns-quiet" type="checkbox"${settings?.quiet_mode ? " checked" : ""} /> Quiet mode — pause all reminders</label>
         <label>Send time
           <select id="ns-hour">${hourOptions(settings?.send_hour ?? 8)}</select>
         </label>
@@ -855,6 +1102,11 @@ async function renderNotifScreen() {
   const hourSel = panel.querySelector("#ns-hour");
   if (hourSel) hourSel.addEventListener("change", async (e) => {
     try { await savePushSettings({ send_hour: Number(e.target.value) }); showToast("Reminder time saved"); }
+    catch (err) { alert("Couldn't save: " + err.message); }
+  });
+  const quietToggle = panel.querySelector("#ns-quiet");
+  if (quietToggle) quietToggle.addEventListener("change", async (e) => {
+    try { await savePushSettings({ quiet_mode: e.target.checked }); showToast(e.target.checked ? "Reminders paused" : "Reminders on"); }
     catch (err) { alert("Couldn't save: " + err.message); }
   });
 }
@@ -939,7 +1191,8 @@ function urlB64ToUint8Array(base64) {
 // Escape closes the popup first, then the habit screen.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if ($("tile-menu")) closeTileMenu();
+  if ($("note-editor")) $("note-editor").remove();
+  else if ($("tile-menu")) closeTileMenu();
   else if ($("notif-screen")) closeNotifScreen();
   else if ($("suggest-screen")) closeSuggestions();
   else if (screenHabitId) closeHabitScreen();

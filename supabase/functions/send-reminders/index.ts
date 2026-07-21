@@ -49,8 +49,9 @@ Deno.serve(async (req) => {
 
   const { data: rows, error } = await db
     .from("push_settings")
-    .select("user_id, send_hour, timezone, last_notified_on")
-    .eq("enabled", true);
+    .select("user_id, send_hour, timezone, last_notified_on, quiet_mode")
+    .eq("enabled", true)
+    .eq("quiet_mode", false); // global mute: skip these users entirely
   if (error) return json({ error: error.message }, 500);
 
   let users = 0, sent = 0;
@@ -72,7 +73,7 @@ Deno.serve(async (req) => {
 async function dueHabits(userId: string, now: Date) {
   const [{ data: habits }, { data: entries }] = await Promise.all([
     db.from("habits").select("id, name, emoji, reminder_threshold_days")
-      .eq("user_id", userId).eq("reminder_enabled", true),
+      .eq("user_id", userId).eq("reminder_enabled", true).eq("paused", false),
     db.from("entries").select("habit_id, logged_at").eq("user_id", userId),
   ]);
   const last: Record<string, number> = {};
