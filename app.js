@@ -61,7 +61,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "23";
+const APP_BUILD = "24";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -241,6 +241,63 @@ function predictInterval(habitId) {
   for (let i = 1; i < sorted.length; i++) gaps.push((sorted[i] - sorted[i - 1]) / DAY);
   const recent = gaps.slice(-PRED_WINDOW);
   return { avg: recent.reduce((s, g) => s + g, 0) / recent.length, learning: false };
+}
+
+/* ---------- Trend chart (per-habit line of days-between-logs) ---------- */
+
+// Hex equivalents of the type CSS vars — SVG stroke can't resolve var(--x).
+const TYPE_HEX = {
+  good: "#37b26b", bad: "#e5533c", neutral: "#7f8b98",
+  people_hangcall: "#4f8cf5", people_text: "#4f8cf5",
+};
+function trendColor(h) { return h.color || TYPE_HEX[h.type] || "#7f8b98"; }
+
+// Type-specific framing: what "longer gaps" means differs for a vice vs a habit.
+function trendConfig(type) {
+  if (type === "bad") return { title: "Trend — days between", longestLabel: "Longest clean stretch", caption: "Higher is better — longer gaps mean progress." };
+  if (type === "people_hangcall" || type === "people_text") return { title: "Trend — days between", longestLabel: "Longest gap", caption: "Lower means you're staying in touch." };
+  if (type === "good") return { title: "Trend — days between logs", longestLabel: "Longest gap", caption: "Lower means you're doing it more often." };
+  return { title: "Trend — days between logs", longestLabel: "Longest gap", caption: "" }; // neutral
+}
+
+// A responsive SVG line chart of the given gaps (days), scaled to fit.
+function trendSvg(gaps, color) {
+  const W = 320, H = 120, padX = 10, padY = 14;
+  const n = gaps.length;
+  const maxG = Math.max(...gaps, 1);
+  const x = (i) => padX + (n === 1 ? (W - 2 * padX) / 2 : (i * (W - 2 * padX)) / (n - 1));
+  const y = (g) => H - padY - (g / maxG) * (H - 2 * padY);
+  const pts = gaps.map((g, i) => `${x(i).toFixed(1)},${y(g).toFixed(1)}`).join(" ");
+  const dots = gaps.map((g, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(g).toFixed(1)}" r="2.6" fill="${color}" />`).join("");
+  return `<svg class="trend-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Days between logs over time">
+    <line class="trend-axis" x1="${padX}" y1="${H - padY}" x2="${W - padX}" y2="${H - padY}" />
+    <polyline class="trend-line" fill="none" stroke="${color}" stroke-width="2.5" points="${pts}" />
+    ${dots}
+  </svg>`;
+}
+
+// Full "Trend" card for the habit screen. Needs >=3 logs (2 gaps) to draw a line.
+function buildTrend(h) {
+  const list = (entriesByHabit[h.id] || []).map((e) => e.at.getTime()).sort((a, b) => a - b);
+  const cfg = trendConfig(h.type);
+  let body;
+  if (list.length < 3) {
+    body = '<p class="msg" style="margin:0">Log a few more times to see your trend.</p>';
+  } else {
+    const allGaps = [];
+    for (let i = 1; i < list.length; i++) allGaps.push((list[i] - list[i - 1]) / DAY);
+    const gaps = allGaps.slice(-20); // recent window, matches the prediction idea
+    const avg = allGaps.reduce((s, g) => s + g, 0) / allGaps.length;
+    const longest = Math.max(...allGaps);
+    body = `
+      ${trendSvg(gaps, trendColor(h))}
+      <div class="trend-stats">
+        <span>Avg <b>${Math.round(avg)}d</b></span>
+        <span>${cfg.longestLabel} <b>${Math.round(longest)}d</b></span>
+      </div>
+      ${cfg.caption ? `<p class="hint" style="margin:0">${cfg.caption}</p>` : ""}`;
+  }
+  return `<section class="card-section"><h3>${cfg.title}</h3>${body}</section>`;
 }
 
 function sinceText(daysSince) {
@@ -619,6 +676,8 @@ function renderHabitScreen() {
       ${cadence ? `<p class="cadence">${cadence}</p>` : ""}
 
       <button class="wide" data-act="lognow">Log a new entry now</button>
+
+      ${buildTrend(h)}
 
       <section class="card-section">
         <h3>Backdate a log</h3>
@@ -1347,5 +1406,6 @@ if (!cfg || cfg.SUPABASE_URL.includes("YOUR-PROJECT")) {
     "Set your Supabase URL and anon key in <code>config.js</code> first.</p>";
 } else {
   $("auth-build").textContent = "Build " + APP_BUILD;
+  $("app-build").textContent = "Build " + APP_BUILD;
   refreshSession();
 }

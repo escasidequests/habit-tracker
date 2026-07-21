@@ -47,6 +47,7 @@ button.secondary { background: transparent; border: 1px solid #3a4552; color: va
   padding: 16px;
 }
 .topbar h1 { font-size: 20px; margin: 0; }
+.build-tag { font-size: 11px; font-weight: 500; color: var(--muted); }
 .topbar-actions { display: flex; gap: 8px; }
 .pill { padding: 8px 14px; font-size: 14px; border-radius: 999px; }
 
@@ -268,6 +269,13 @@ button:disabled { opacity: .5; cursor: default; }
   padding: 10px 16px; font-size: 13px; color: var(--text);
 }
 .banner button { background: none; color: var(--muted); font-size: 14px; padding: 2px 6px; flex: none; }
+
+/* Trend chart (habit screen) */
+.trend-svg { width: 100%; height: auto; display: block; overflow: visible; }
+.trend-line { stroke-linejoin: round; stroke-linecap: round; }
+.trend-axis { stroke: #313a46; stroke-width: 1; }
+.trend-stats { display: flex; gap: 18px; justify-content: center; font-size: 13px; color: var(--muted); }
+.trend-stats b { color: var(--text); font-weight: 700; }
 
 /* Due-mode (Reminders) control */
 .due-field {
