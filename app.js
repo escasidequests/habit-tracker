@@ -23,6 +23,8 @@ let currentView = localStorage.getItem("habitView") || "due";
 
 const $ = (id) => document.getElementById(id);
 const DAY = 86400000;
+// Touch-primary devices (phones/tablets) get swipe-to-delete; mouse-primary gets checkboxes.
+const isTouch = window.matchMedia("(pointer: coarse)").matches;
 
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [logged_at Date, ...]
@@ -164,15 +166,287 @@ function buildTile(h) {
   tile.dataset.habitId = h.id;
   tile.style.setProperty("--type", t ? t.color : "var(--neutral)");
   tile.innerHTML = `
-    <button class="more" title="Backdate / delete">⋯</button>
-    <div class="emoji" title="Change emoji">${h.emoji}</div>
+    <div class="emoji">${h.emoji}</div>
     <div class="name">${escapeHtml(h.name)}</div>
     <div class="stat">${sinceText(daysSince)}</div>
     <div class="count">${count}×${overdue ? " · due" : ""}</div>`;
-  tile.addEventListener("click", () => logNow(h.id, tile));
-  tile.querySelector(".emoji").addEventListener("click", (e) => { e.stopPropagation(); changeEmoji(h); });
-  tile.querySelector(".more").addEventListener("click", (e) => { e.stopPropagation(); moreMenu(h); });
+  attachTileGestures(tile, h);
   return tile;
+}
+
+// Tap = log instantly. Press-and-hold (or right-click) = options popup.
+function attachTileGestures(tile, h) {
+  let timer = null, longPressed = false, sx = 0, sy = 0;
+  const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+
+  tile.addEventListener("pointerdown", (e) => {
+    if (e.button && e.button !== 0) return; // ignore non-primary buttons
+    longPressed = false;
+    sx = e.clientX; sy = e.clientY;
+    timer = setTimeout(() => { longPressed = true; buzz(); openTileMenu(h, tile); }, 500);
+  });
+  tile.addEventListener("pointermove", (e) => {
+    if (timer && (Math.abs(e.clientX - sx) > 10 || Math.abs(e.clientY - sy) > 10)) clear();
+  });
+  tile.addEventListener("pointerup", clear);
+  tile.addEventListener("pointercancel", clear);
+  tile.addEventListener("pointerleave", clear);
+
+  tile.addEventListener("click", () => {
+    if (longPressed) { longPressed = false; return; } // hold already handled it
+    logNow(h.id, tile);
+  });
+  tile.addEventListener("contextmenu", (e) => { e.preventDefault(); openTileMenu(h, tile); });
+}
+
+/* ---------- Tile options popup ---------- */
+
+function openTileMenu(h, tile) {
+  closeTileMenu();
+  const overlay = document.createElement("div");
+  overlay.id = "tile-menu";
+  overlay.className = "popover";
+  overlay.innerHTML = `
+    <div class="popover-card">
+      <div class="popover-title">${h.emoji} ${escapeHtml(h.name)}</div>
+      <button data-act="log">Log a new entry now</button>
+      <button data-act="open" class="secondary">Open habit screen</button>
+      <button data-act="cancel" class="ghost">Cancel</button>
+    </div>`;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) closeTileMenu(); });
+  overlay.querySelector('[data-act="log"]').addEventListener("click", () => { closeTileMenu(); logNow(h.id, tile); });
+  overlay.querySelector('[data-act="open"]').addEventListener("click", () => { closeTileMenu(); openHabitScreen(h.id); });
+  overlay.querySelector('[data-act="cancel"]').addEventListener("click", closeTileMenu);
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add("show"));
+}
+
+function closeTileMenu() {
+  const m = $("tile-menu");
+  if (m) m.remove();
+}
+
+/* ---------- Habit screen ---------- */
+
+let screenHabitId = null;
+
+function openHabitScreen(habitId) {
+  screenHabitId = habitId;
+  let panel = $("habit-screen");
+  if (!panel) {
+    panel = document.createElement("section");
+    panel.id = "habit-screen";
+    panel.className = "screen";
+    document.body.appendChild(panel);
+  }
+  renderHabitScreen();
+  requestAnimationFrame(() => panel.classList.add("show"));
+}
+
+function closeHabitScreen() {
+  screenHabitId = null;
+  const panel = $("habit-screen");
+  if (panel) panel.remove();
+}
+
+function renderHabitScreen() {
+  const panel = $("habit-screen");
+  if (!panel || !screenHabitId) return;
+  const h = habits.find((x) => x.id === screenHabitId);
+  if (!h) { closeHabitScreen(); return; }
+
+  const { count, daysSince } = stats(h.id);
+  const entries = (entriesByHabit[h.id] || []).slice().sort((a, b) => b.at - a.at);
+
+  let historyHtml;
+  if (!entries.length) {
+    historyHtml = '<p class="msg">No logs yet.</p>';
+  } else if (isTouch) {
+    // Swipe a row left to reveal a Delete button.
+    historyHtml = entries.map((e) => `
+      <div class="swipe" data-id="${e.id}">
+        <button class="swipe-del" data-id="${e.id}">Delete</button>
+        <div class="swipe-content">${fmtDateTime(e.at)}</div>
+      </div>`).join("");
+  } else {
+    // Check rows, then Delete selected.
+    historyHtml = `
+      <div class="bulk-bar">
+        <button data-act="del-selected" disabled>Delete selected</button>
+        <span class="sel-count"></span>
+      </div>` +
+      entries.map((e) => `
+        <label class="hist-row select">
+          <span>${fmtDateTime(e.at)}</span>
+          <input type="checkbox" class="hist-check" data-id="${e.id}" />
+        </label>`).join("");
+  }
+
+  panel.innerHTML = `
+    <header class="screen-head">
+      <button class="back" data-act="back">‹ Back</button>
+      <div class="screen-title">${h.emoji} ${escapeHtml(h.name)}</div>
+      <span class="spacer"></span>
+    </header>
+    <div class="screen-body">
+      <div class="stat-row">
+        <div class="stat-box"><div class="big">${count}</div><div class="lbl">total logs</div></div>
+        <div class="stat-box"><div class="big">${daysSince === null ? "–" : daysSince}</div><div class="lbl">${daysSince === 1 ? "day since" : "days since"}</div></div>
+      </div>
+
+      <button class="wide" data-act="lognow">Log a new entry now</button>
+
+      <section class="card-section">
+        <h3>Backdate a log</h3>
+        <div class="row">
+          <input type="datetime-local" id="hs-date" />
+          <button data-act="backdate">Add</button>
+        </div>
+      </section>
+
+      <section class="card-section">
+        <h3>History (${entries.length})</h3>
+        <div class="history">${historyHtml}</div>
+      </section>
+
+      <section class="card-section">
+        <h3>Edit habit</h3>
+        <label>Emoji <input id="hs-emoji" maxlength="8" value="${escapeAttr(h.emoji)}" /></label>
+        <label>Name <input id="hs-name" value="${escapeAttr(h.name)}" /></label>
+        <label>Type
+          <select id="hs-type">
+            ${TYPES.map((tt) => `<option value="${tt.key}"${tt.key === h.type ? " selected" : ""}>${tt.label}</option>`).join("")}
+          </select>
+        </label>
+        <label class="row">
+          <input id="hs-remind" type="checkbox"${h.reminder_enabled ? " checked" : ""} /> Remind me if it's been over
+          <input id="hs-threshold" type="number" min="1" class="num" value="${h.reminder_threshold_days || 7}" /> days
+        </label>
+        <button data-act="save">Save changes</button>
+      </section>
+
+      <button class="wide danger" data-act="delete">Delete habit</button>
+    </div>`;
+
+  panel.querySelector('[data-act="back"]').addEventListener("click", closeHabitScreen);
+
+  panel.querySelector('[data-act="lognow"]').addEventListener("click", async () => {
+    buzz();
+    if (await insertEntry(h.id, new Date())) { renderHabitScreen(); render(); }
+  });
+
+  panel.querySelector('[data-act="backdate"]').addEventListener("click", async () => {
+    const v = $("hs-date").value;
+    if (!v) return;
+    const when = new Date(v); // datetime-local → local date + time
+    if (isNaN(when)) return alert("Couldn't read that date.");
+    if (await insertEntry(h.id, when)) { renderHabitScreen(); render(); }
+  });
+
+  if (isTouch) {
+    panel.querySelectorAll(".swipe").forEach(attachSwipe);
+    panel.querySelectorAll(".swipe-del").forEach((b) =>
+      b.addEventListener("click", () => deleteEntries(h.id, [b.dataset.id])));
+  } else {
+    const bar = panel.querySelector('[data-act="del-selected"]');
+    const countEl = panel.querySelector(".sel-count");
+    const checks = () => Array.from(panel.querySelectorAll(".hist-check"));
+    const refresh = () => {
+      const n = checks().filter((c) => c.checked).length;
+      if (bar) bar.disabled = n === 0;
+      if (countEl) countEl.textContent = n ? `${n} selected` : "";
+    };
+    checks().forEach((c) => c.addEventListener("change", refresh));
+    if (bar) bar.addEventListener("click", () => {
+      const ids = checks().filter((c) => c.checked).map((c) => c.dataset.id);
+      if (!ids.length) return;
+      if (!confirm(`Delete ${ids.length} log${ids.length === 1 ? "" : "s"}?`)) return;
+      deleteEntries(h.id, ids);
+    });
+  }
+
+  panel.querySelector('[data-act="save"]').addEventListener("click", async () => {
+    const remind = $("hs-remind").checked;
+    const patch = {
+      name: $("hs-name").value.trim(),
+      emoji: $("hs-emoji").value.trim() || "✅",
+      type: $("hs-type").value,
+      reminder_enabled: remind,
+      reminder_threshold_days: remind ? Number($("hs-threshold").value) : null,
+    };
+    if (!patch.name) return alert("Name can't be empty.");
+    const { error } = await db.from("habits").update(patch).eq("id", h.id);
+    if (error) return alert(error.message);
+    Object.assign(h, patch);
+    renderHabitScreen(); render();
+    showToast("Saved changes");
+  });
+
+  panel.querySelector('[data-act="delete"]').addEventListener("click", async () => {
+    if (!confirm(`Delete “${h.name}” and all its logs?`)) return;
+    const { error } = await db.from("habits").delete().eq("id", h.id);
+    if (error) return alert(error.message);
+    habits = habits.filter((x) => x.id !== h.id);
+    delete entriesByHabit[h.id];
+    closeHabitScreen(); render();
+  });
+}
+
+// Delete one or many entries, then refresh screen + grid.
+async function deleteEntries(habitId, ids) {
+  const { error } = await db.from("entries").delete().in("id", ids);
+  if (error) return alert(error.message);
+  entriesByHabit[habitId] = (entriesByHabit[habitId] || []).filter((e) => !ids.includes(e.id));
+  renderHabitScreen();
+  render();
+}
+
+// Horizontal drag on a history row reveals its Delete button; only one row open at a time.
+function attachSwipe(row) {
+  const content = row.querySelector(".swipe-content");
+  const REVEAL = 84;
+  let startX = 0, base = 0, dragging = false, moved = false;
+
+  content.addEventListener("pointerdown", (e) => {
+    dragging = true; moved = false; startX = e.clientX;
+    base = row.classList.contains("open") ? -REVEAL : 0;
+    content.style.transition = "none";
+    content.setPointerCapture(e.pointerId);
+  });
+  content.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const dx = e.clientX - startX;
+    if (Math.abs(dx) > 4) moved = true;
+    let x = base + dx;
+    if (x > 0) x = 0;                                        // don't drag past closed
+    else if (x < -REVEAL) x = -REVEAL + (x + REVEAL) * 0.35; // rubber-band past the reveal point
+    content.style.transform = `translateX(${x}px)`;
+  });
+  const settle = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    content.style.transition = "";
+    content.style.transform = ""; // hand final position back to the .open CSS class
+    const x = base + (e ? e.clientX - startX : 0);
+    row.parentElement.querySelectorAll(".swipe.open").forEach((r) => { if (r !== row) r.classList.remove("open"); });
+    row.classList.toggle("open", x < -REVEAL / 2);
+  };
+  content.addEventListener("pointerup", settle);
+  content.addEventListener("pointercancel", () => { dragging = false; content.style.transition = ""; content.style.transform = ""; });
+  content.addEventListener("click", (e) => {
+    if (moved) { e.preventDefault(); e.stopPropagation(); return; }
+    if (row.classList.contains("open")) row.classList.remove("open"); // tap open row to close
+  });
+}
+
+function fmtDateTime(d) {
+  return d.toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
+
+function escapeAttr(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
 // overdue first, then alphabetical — used within a type group.
@@ -228,12 +502,6 @@ async function insertEntry(habitId, when) {
   return data;
 }
 
-// Backdated log — full re-render since it can change ordering.
-async function addEntry(habitId, when) {
-  const row = await insertEntry(habitId, when);
-  if (row) render();
-}
-
 async function undoLog(habitId, entryId) {
   const { error } = await db.from("entries").delete().eq("id", entryId);
   if (error) return alert(error.message);
@@ -274,7 +542,9 @@ let toastTimer = null;
 function showToast(msg, onUndo) {
   const toast = $("toast");
   $("toast-msg").textContent = msg;
-  $("toast-undo").onclick = onUndo;
+  const undo = $("toast-undo");
+  undo.classList.toggle("hidden", !onUndo);
+  undo.onclick = onUndo || null;
   toast.classList.remove("hidden");
   void toast.offsetWidth;
   toast.classList.add("show");
@@ -286,36 +556,6 @@ function hideToast() {
   toast.classList.remove("show");
   clearTimeout(toastTimer);
   setTimeout(() => toast.classList.add("hidden"), 200);
-}
-
-async function changeEmoji(h) {
-  const next = prompt(`Emoji for “${h.name}”`, h.emoji);
-  if (!next || next === h.emoji) return;
-  const { error } = await db.from("habits").update({ emoji: next }).eq("id", h.id);
-  if (error) return alert(error.message);
-  h.emoji = next; render();
-}
-
-async function moreMenu(h) {
-  const choice = prompt(
-    `“${h.name}” — type:\n  B = backdate a log (YYYY-MM-DD)\n  D = delete this habit\n(leave blank to cancel)`
-  );
-  if (!choice) return;
-  const c = choice.trim().toUpperCase();
-  if (c === "D") {
-    if (!confirm(`Delete “${h.name}” and all its logs?`)) return;
-    const { error } = await db.from("habits").delete().eq("id", h.id);
-    if (error) return alert(error.message);
-    habits = habits.filter((x) => x.id !== h.id);
-    delete entriesByHabit[h.id];
-    render();
-  } else if (c === "B") {
-    const d = prompt("Date to log (YYYY-MM-DD):");
-    if (!d) return;
-    const when = new Date(d + "T12:00:00");
-    if (isNaN(when)) return alert("Couldn't read that date.");
-    addEntry(h.id, when);
-  }
 }
 
 /* ---------- Add habit modal ---------- */
@@ -342,6 +582,13 @@ $("habit-form").addEventListener("submit", async (e) => {
   $("h-emoji").value = "✅";
   $("modal").classList.add("hidden");
   render();
+});
+
+// Escape closes the popup first, then the habit screen.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if ($("tile-menu")) closeTileMenu();
+  else if (screenHabitId) closeHabitScreen();
 });
 
 /* ---------- Boot ---------- */

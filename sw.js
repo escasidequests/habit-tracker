@@ -1,6 +1,6 @@
 // Minimal service worker: caches the app shell so it opens offline.
 // Data always comes from Supabase over the network.
-const CACHE = "habit-shell-v3";
+const CACHE = "habit-shell-v6";
 const SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./config.js", "./manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
