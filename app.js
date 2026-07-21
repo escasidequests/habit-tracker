@@ -512,6 +512,8 @@ async function undoLog(habitId, entryId) {
 
 /* ---------- Feedback helpers ---------- */
 
+// Vibration works on Android; iOS Safari has no Web Vibration API, so this is a
+// no-op on iPhone (tap feedback there is visual — see popTile / .pop in styles.css).
 function buzz() { if (navigator.vibrate) navigator.vibrate(15); }
 
 function popTile(tile) {
@@ -523,7 +525,7 @@ function popTile(tile) {
   plus.className = "float-plus";
   plus.textContent = "+1";
   tile.appendChild(plus);
-  setTimeout(() => { tile.classList.remove("pop"); plus.remove(); }, 800);
+  setTimeout(() => { tile.classList.remove("pop"); plus.remove(); }, 950);
 }
 
 // Update one tile's stat/count/overdue in place, without rebuilding the grid.
