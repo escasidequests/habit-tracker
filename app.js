@@ -55,7 +55,7 @@ const DAY = 86400000;
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "12";
+const APP_BUILD = "13";
 
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [logged_at Date, ...]
@@ -721,6 +721,11 @@ async function renderNotifScreen() {
     } catch (_) {}
   }
 
+  // Current reminder settings (null if the table/row isn't there yet).
+  let settings = null;
+  try { settings = (await db.from("push_settings").select("send_hour, timezone").maybeSingle()).data; } catch (_) {}
+  const tz = settings?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
   let guidance = "";
   if (!pushSupported) {
     guidance = `<div class="notice">This browser doesn't support web push notifications.</div>`;
@@ -755,6 +760,15 @@ async function renderNotifScreen() {
         ${subscribed ? "Re-subscribe this device" : "Enable notifications"}
       </button>
       <button class="wide secondary" data-act="test"${perm === "granted" ? "" : " disabled"}>Send a test notification</button>
+      ${subscribed ? `
+      <section class="card-section">
+        <h3>Reminder schedule</h3>
+        <label>Send time
+          <select id="ns-hour">${hourOptions(settings?.send_hour ?? 8)}</select>
+        </label>
+        <div class="kv"><span>Time zone</span><b>${escapeHtml(tz)}</b></div>
+        <p class="hint" style="margin:0">One daily digest of everything that's due.</p>
+      </section>` : ""}
       <p class="hint">The test fires a notification straight from this device (no server needed) to
         confirm they show up. Scheduled "habit due" reminders arrive once the backend is set up.</p>
       <p class="hint" style="margin-top:0">Build ${APP_BUILD}</p>
@@ -763,6 +777,20 @@ async function renderNotifScreen() {
   panel.querySelector('[data-act="back"]').addEventListener("click", closeNotifScreen);
   panel.querySelector('[data-act="enable"]').addEventListener("click", enableNotifications);
   panel.querySelector('[data-act="test"]').addEventListener("click", testNotification);
+  const hourSel = panel.querySelector("#ns-hour");
+  if (hourSel) hourSel.addEventListener("change", async (e) => {
+    try { await savePushSettings({ send_hour: Number(e.target.value) }); showToast("Reminder time saved"); }
+    catch (err) { alert("Couldn't save: " + err.message); }
+  });
+}
+
+function hourOptions(sel) {
+  let o = "";
+  for (let h = 0; h < 24; h++) {
+    const label = `${((h + 11) % 12) + 1}:00 ${h < 12 ? "AM" : "PM"}`;
+    o += `<option value="${h}"${h === sel ? " selected" : ""}>${label}</option>`;
+  }
+  return o;
 }
 
 async function enableNotifications() {
@@ -777,9 +805,11 @@ async function enableNotifications() {
         applicationServerKey: urlB64ToUint8Array(cfg.VAPID_PUBLIC_KEY),
       });
     }
-    // Best-effort: persist to Supabase. If the table isn't there yet, we still succeed locally.
-    try { await savePushSubscription(sub); }
-    catch (err) { console.warn("Subscription not saved to Supabase yet:", err.message); }
+    // Best-effort: persist to Supabase. If the tables aren't there yet, we still succeed locally.
+    try {
+      await savePushSubscription(sub);
+      await savePushSettings({ enabled: true, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone });
+    } catch (err) { console.warn("Not saved to Supabase yet:", err.message); }
     renderNotifScreen();
     showToast("Notifications enabled");
   } catch (err) {
@@ -811,6 +841,13 @@ async function savePushSubscription(sub) {
     auth: j.keys.auth,
     user_agent: navigator.userAgent,
   }, { onConflict: "endpoint" });
+  if (error) throw error;
+}
+
+async function savePushSettings(patch) {
+  const { data: u } = await db.auth.getUser();
+  const { error } = await db.from("push_settings").upsert(
+    { user_id: u.user.id, ...patch }, { onConflict: "user_id" });
   if (error) throw error;
 }
 
