@@ -17,6 +17,11 @@ import webpush from "npm:web-push@3.6.7";
 
 const DAY = 86_400_000;
 
+// Interval-prediction tuning — MUST stay in sync with the same constants in app.js.
+const PRED_WINDOW = 5;    // average the most recent N gaps
+const PRED_MIN_GAPS = 2;  // need at least this many gaps before predicting/nudging
+const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds avg gap * this
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const VAPID_PUBLIC = Deno.env.get("VAPID_PUBLIC_KEY")!;
@@ -70,24 +75,41 @@ Deno.serve(async (req) => {
   return json({ ok: true, users, sent });
 });
 
+// Average of the most recent gaps (in days) between sorted log times.
+// null when there aren't enough gaps yet (still "learning").
+function predictedInterval(times: number[]): number | null {
+  if (times.length < PRED_MIN_GAPS + 1) return null;
+  const sorted = times.slice().sort((a, b) => a - b);
+  const gaps: number[] = [];
+  for (let i = 1; i < sorted.length; i++) gaps.push((sorted[i] - sorted[i - 1]) / DAY);
+  const recent = gaps.slice(-PRED_WINDOW);
+  return recent.reduce((s, g) => s + g, 0) / recent.length;
+}
+
 async function dueHabits(userId: string, now: Date) {
   const [{ data: habits }, { data: entries }] = await Promise.all([
-    db.from("habits").select("id, name, emoji, reminder_threshold_days")
-      .eq("user_id", userId).eq("reminder_enabled", true).eq("paused", false),
+    db.from("habits").select("id, name, emoji, due_mode, recurrence_days")
+      .eq("user_id", userId).eq("paused", false).neq("due_mode", "none"),
     db.from("entries").select("habit_id, logged_at").eq("user_id", userId),
   ]);
-  const last: Record<string, number> = {};
+  const times: Record<string, number[]> = {};
   for (const e of entries ?? []) {
-    const t = new Date(e.logged_at).getTime();
-    if (!last[e.habit_id] || t > last[e.habit_id]) last[e.habit_id] = t;
+    (times[e.habit_id] ||= []).push(new Date(e.logged_at).getTime());
   }
   const due: { name: string; emoji: string; days: number | null }[] = [];
   for (const h of habits ?? []) {
-    if (!h.reminder_threshold_days) continue;
-    const days = last[h.id] ? Math.floor((now.getTime() - last[h.id]) / DAY) : null;
-    if (days === null || days > h.reminder_threshold_days) {
-      due.push({ name: h.name, emoji: h.emoji, days });
+    const list = times[h.id] ?? [];
+    const lastAt = list.length ? Math.max(...list) : null;
+    const days = lastAt === null ? null : Math.floor((now.getTime() - lastAt) / DAY);
+    let isDue = false;
+    if (h.due_mode === "recurrence") {
+      if (h.recurrence_days) isDue = days === null || days > h.recurrence_days;
+    } else if (h.due_mode === "interval") {
+      const avg = predictedInterval(list);
+      if (avg !== null && days !== null) isDue = days > avg * PRED_GRACE;
+      // never-logged or still-learning interval habits don't nudge
     }
+    if (isDue) due.push({ name: h.name, emoji: h.emoji, days });
   }
   return due;
 }

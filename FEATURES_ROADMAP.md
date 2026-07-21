@@ -92,8 +92,14 @@ Each is small and can ship in any order.
   `SHARING_DESIGN.md`.
 - **[#14] Count-down / "time until" a future date** — parked; feels like a different *type* of
   tracking than the days-since/count core. Would need its own tile mode.
-- **[#16] Trophies / achievements** — interesting for a future iteration; watch that it doesn't
-  cut against the "no streaks, no shame" ethos.
+- **[#16] Trophies / awards page** (future phase — Julia wants this) — milestone **awards for
+  "days since" on bad habits** (e.g. 7 / 30 / 90 / 365 days since you last did it), with
+  **user-customizable thresholds**, displayed on a dedicated **Trophy page**. Framed as "days clean"
+  it's a recovery/celebration mechanic, so it fits the "no shame" ethos rather than fighting it (it's
+  the inverse of a streak — rewarding *distance from* a bad habit). Design notes for when we build:
+  likely a `awards`/`milestones` config per habit (or global thresholds), earned-state computed from
+  days-since, an unlocked/locked visual grid, maybe a subtle celebration when a new one unlocks.
+  Applies mainly to `bad` (and maybe `people`) types. Revisit after the core roadmap phases.
 
 ## Polish backlog (shipped but wants refinement)
 - **Drag-to-reorder UX** (Phase 2, Build 20) — works, but it's the basic version: tiles snap to

@@ -266,6 +266,18 @@ button:disabled { opacity: .5; cursor: default; }
 }
 .banner button { background: none; color: var(--muted); font-size: 14px; padding: 2px 6px; flex: none; }
 
+/* Due-mode (Reminders) control */
+.due-field {
+  border: 1px solid #313a46; border-radius: 10px; padding: 10px 12px; margin: 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.due-field legend { font-size: 12px; color: var(--muted); padding: 0 4px; text-transform: uppercase; letter-spacing: .06em; }
+.due-field .radio { display: flex; flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 14px; }
+.due-field input[type="radio"] { width: 18px; height: 18px; flex: none; padding: 0; }
+.due-field .num { width: 56px; }
+.due-field .num:disabled { opacity: .4; }
+.cadence { font-size: 13px; color: var(--muted); text-align: center; margin: -4px 0 0; }
+
 /* Search + sort controls (under the tabs) */
 .controls { display: flex; gap: 8px; align-items: center; padding: 0 16px 12px; }
 .controls #search {
