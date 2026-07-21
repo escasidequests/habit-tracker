@@ -58,3 +58,5 @@ create policy "entries are private to owner" on public.entries
 
 grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on public.habits, public.entries to authenticated;
+-- service_role is what the push Edge Function uses to read habits/entries for all users.
+grant select, insert, update, delete on public.habits, public.entries to service_role;

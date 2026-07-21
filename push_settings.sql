@@ -20,4 +20,6 @@ create policy "own push settings" on public.push_settings
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
-grant select, insert, update, delete on public.push_settings to authenticated;
+-- authenticated = the app (via RLS); service_role = the Edge Function (bypasses RLS
+-- but still needs table privileges).
+grant select, insert, update, delete on public.push_settings to authenticated, service_role;
