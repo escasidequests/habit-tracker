@@ -55,7 +55,7 @@ const DAY = 86400000;
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "15";
+const APP_BUILD = "16";
 
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [logged_at Date, ...]
@@ -953,5 +953,6 @@ if (!cfg || cfg.SUPABASE_URL.includes("YOUR-PROJECT")) {
     '<p style="padding:24px;font-family:sans-serif;color:#e8ecf1;background:#111418">' +
     "Set your Supabase URL and anon key in <code>config.js</code> first.</p>";
 } else {
+  $("auth-build").textContent = "Build " + APP_BUILD;
   refreshSession();
 }
