@@ -86,9 +86,36 @@ function predictedInterval(times: number[]): number | null {
   return recent.reduce((s, g) => s + g, 0) / recent.length;
 }
 
+type Due = { name: string; emoji: string; days: number | null; status: "soon" | "overdue" };
+
+// 'none' | 'soon' | 'overdue'. lead = days before the due point to start nudging
+// (0 = only once overdue). MUST mirror dueStatus() in app.js.
+function dueStatus(
+  dueMode: string,
+  recurrenceDays: number | null,
+  lead: number,
+  avg: number | null,
+  days: number | null,
+): "none" | "soon" | "overdue" {
+  if (dueMode === "recurrence") {
+    if (!recurrenceDays) return "none";
+    if (days === null || days > recurrenceDays) return "overdue";
+    if (days > recurrenceDays - lead) return "soon";
+    return "none";
+  }
+  if (dueMode === "interval") {
+    if (avg === null || days === null) return "none"; // never-logged or still learning
+    const threshold = avg * PRED_GRACE;
+    if (days > threshold) return "overdue";
+    if (days > threshold - lead) return "soon";
+    return "none";
+  }
+  return "none";
+}
+
 async function dueHabits(userId: string, now: Date) {
   const [{ data: habits }, { data: entries }] = await Promise.all([
-    db.from("habits").select("id, name, emoji, due_mode, recurrence_days")
+    db.from("habits").select("id, name, emoji, due_mode, recurrence_days, reminder_lead_days")
       .eq("user_id", userId).eq("paused", false).neq("due_mode", "none"),
     db.from("entries").select("habit_id, logged_at").eq("user_id", userId),
   ]);
@@ -96,35 +123,33 @@ async function dueHabits(userId: string, now: Date) {
   for (const e of entries ?? []) {
     (times[e.habit_id] ||= []).push(new Date(e.logged_at).getTime());
   }
-  const due: { name: string; emoji: string; days: number | null }[] = [];
+  const due: Due[] = [];
   for (const h of habits ?? []) {
     const list = times[h.id] ?? [];
     const lastAt = list.length ? Math.max(...list) : null;
     const days = lastAt === null ? null : Math.floor((now.getTime() - lastAt) / DAY);
-    let isDue = false;
-    if (h.due_mode === "recurrence") {
-      if (h.recurrence_days) isDue = days === null || days > h.recurrence_days;
-    } else if (h.due_mode === "interval") {
-      const avg = predictedInterval(list);
-      if (avg !== null && days !== null) isDue = days > avg * PRED_GRACE;
-      // never-logged or still-learning interval habits don't nudge
-    }
-    if (isDue) due.push({ name: h.name, emoji: h.emoji, days });
+    const avg = h.due_mode === "interval" ? predictedInterval(list) : null;
+    const status = dueStatus(h.due_mode, h.recurrence_days, h.reminder_lead_days ?? 0, avg, days);
+    if (status !== "none") due.push({ name: h.name, emoji: h.emoji, days, status });
   }
   return due;
 }
 
-function buildPayload(due: { name: string; emoji: string; days: number | null }[]) {
+function buildPayload(due: Due[]) {
   if (due.length === 1) {
     const h = due[0];
+    if (h.status === "soon") {
+      return { title: `🔔 ${h.emoji} ${h.name} is coming due`, body: "A heads-up — it'll be due soon.", url: "./" };
+    }
     return {
       title: `⏰ ${h.emoji} ${h.name} is due`,
       body: h.days === null ? "You haven't logged this yet." : `It's been ${h.days} days.`,
       url: "./",
     };
   }
+  const anyOverdue = due.some((h) => h.status === "overdue");
   return {
-    title: `⏰ ${due.length} habits due`,
+    title: anyOverdue ? `⏰ ${due.length} habits need attention` : `🔔 ${due.length} habits coming due`,
     body: due.map((h) => `${h.emoji} ${h.name}`).join(", "),
     url: "./",
   };

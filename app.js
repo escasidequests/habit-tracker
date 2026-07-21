@@ -61,7 +61,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "22";
+const APP_BUILD = "23";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -249,18 +249,42 @@ function sinceText(daysSince) {
     : `${daysSince} day${daysSince === 1 ? "" : "s"} ago`;
 }
 
-function isOverdue(h, daysSince) {
-  if (h.paused) return false; // paused habits never nudge
+// 'none' | 'soon' | 'overdue'. "soon" = within the habit's lead-time window
+// before its due point; "overdue" = past it. Lead 0 → soon never fires (matches
+// the old overdue-only behavior). MUST mirror dueStatus() in the Edge Function.
+function dueStatus(h, daysSince) {
+  if (h.paused) return "none";
+  const lead = h.reminder_lead_days || 0;
   if (h.due_mode === "recurrence") {
-    if (!h.recurrence_days) return false;
-    return daysSince === null || daysSince > h.recurrence_days;
+    if (!h.recurrence_days) return "none";
+    if (daysSince === null || daysSince > h.recurrence_days) return "overdue";
+    if (daysSince > h.recurrence_days - lead) return "soon";
+    return "none";
   }
   if (h.due_mode === "interval") {
     const { avg, learning } = predictInterval(h.id);
-    if (learning || daysSince === null) return false; // still learning / no data → don't nudge
-    return daysSince > avg * PRED_GRACE;
+    if (learning || daysSince === null) return "none"; // still learning / no data
+    const threshold = avg * PRED_GRACE;
+    if (daysSince > threshold) return "overdue";
+    if (daysSince > threshold - lead) return "soon";
+    return "none";
   }
-  return false; // 'none' — just tracking
+  return "none"; // 'none' — just tracking
+}
+
+function isActive(h, daysSince) { const s = dueStatus(h, daysSince); return s === "soon" || s === "overdue"; }
+
+// Days until a habit's due point (negative = overdue). Infinity when it has no
+// due point yet (no mode, never logged, or still learning). Used to sort "soon".
+function daysUntilDue(h) {
+  const d = stats(h.id).daysSince;
+  if (d === null) return Infinity;
+  if (h.due_mode === "recurrence" && h.recurrence_days) return h.recurrence_days - d;
+  if (h.due_mode === "interval") {
+    const { avg, learning } = predictInterval(h.id);
+    if (!learning) return avg * PRED_GRACE - d;
+  }
+  return Infinity;
 }
 
 // The accent color a habit renders with: its custom color, or its type color.
@@ -309,9 +333,14 @@ function render() {
   if (reorderMode) grid.appendChild(hintEl("Drag tiles to reorder — tap Done when finished."));
 
   if (view.key === "due") {
-    const due = habits.filter((h) => matches(h) && isOverdue(h, stats(h.id).daysSince)).sort(dueSort);
-    if (due.length) renderGroup(grid, "Due now", due);
-    else grid.appendChild(msgEl(q ? "No matches due." : "Nothing due right now — you're all caught up. 🎉"));
+    const inView = habits.filter((h) => matches(h));
+    const soon = inView.filter((h) => dueStatus(h, stats(h.id).daysSince) === "soon").sort(soonSort);
+    const over = inView.filter((h) => dueStatus(h, stats(h.id).daysSince) === "overdue").sort(dueSort);
+    if (soon.length) renderGroup(grid, "Coming up", soon);
+    if (over.length) renderGroup(grid, "Overdue", over);
+    if (!soon.length && !over.length) {
+      grid.appendChild(msgEl(q ? "No matches due." : "Nothing due right now — you're all caught up. 🎉"));
+    }
     return;
   }
 
@@ -352,7 +381,7 @@ function renderControls() {
 function renderTabs() {
   const nav = $("tabs");
   nav.innerHTML = "";
-  const dueCount = habits.filter((h) => isOverdue(h, stats(h.id).daysSince)).length;
+  const dueCount = habits.filter((h) => isActive(h, stats(h.id).daysSince)).length;
   for (const v of VIEWS) {
     const btn = document.createElement("button");
     btn.className = "tab" + (v.key === currentView ? " active" : "");
@@ -378,14 +407,15 @@ function renderGroup(grid, label, list) {
 
 function buildTile(h) {
   const { count, daysSince } = stats(h.id);
-  const overdue = isOverdue(h, daysSince);
+  const status = dueStatus(h, daysSince);
   const tile = document.createElement("div");
-  tile.className = "tile" + (overdue ? " overdue" : "") + (h.paused ? " paused" : "") + (h.hidden ? " is-hidden" : "");
+  tile.className = "tile" + (status === "overdue" ? " overdue" : status === "soon" ? " soon" : "") +
+    (h.paused ? " paused" : "") + (h.hidden ? " is-hidden" : "");
   tile.dataset.habitId = h.id;
   tile.style.setProperty("--type", habitColor(h));
   const flags = (h.pinned ? "📌" : "") + (h.paused ? "⏸" : "");
   tile.innerHTML = `
-    <span class="due-badge">DUE</span>
+    <span class="due-badge">${status === "soon" ? "SOON" : "DUE"}</span>
     ${flags ? `<span class="tile-flags">${flags}</span>` : ""}
     <div class="emoji">${h.emoji}</div>
     <div class="name">${escapeHtml(h.name)}</div>
@@ -537,6 +567,9 @@ function renderHabitScreen() {
       ? "🧠 Automatic — learning your pattern (log a few more times)"
       : `🧠 Automatic — usually every ~${Math.round(p.avg)} day${Math.round(p.avg) === 1 ? "" : "s"}`;
   }
+  if (cadence && h.reminder_lead_days) {
+    cadence += ` · ${h.reminder_lead_days} day${h.reminder_lead_days === 1 ? "" : "s"} early`;
+  }
 
   let historyHtml;
   if (!entries.length) {
@@ -611,7 +644,7 @@ function renderHabitScreen() {
           </select>
         </label>
         <label>Color <div id="hs-color" class="swatches"></div></label>
-        ${dueControlHtml("hs", h.due_mode, h.recurrence_days)}
+        ${dueControlHtml("hs", h.due_mode, h.recurrence_days, h.reminder_lead_days)}
         <label class="row"><input id="hs-pinned" type="checkbox"${h.pinned ? " checked" : ""} /> Pin to top</label>
         <label class="row"><input id="hs-paused" type="checkbox"${h.paused ? " checked" : ""} /> Paused (no reminders)</label>
         <label class="row"><input id="hs-hidden" type="checkbox"${h.hidden ? " checked" : ""} /> Hide from main view</label>
@@ -671,6 +704,7 @@ function renderHabitScreen() {
       color: getColor(),
       due_mode: due.due_mode,
       recurrence_days: due.recurrence_days,
+      reminder_lead_days: due.reminder_lead_days,
       pinned: $("hs-pinned").checked,
       paused: $("hs-paused").checked,
       hidden: $("hs-hidden").checked,
@@ -750,6 +784,11 @@ function escapeAttr(s) {
   return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 }
 
+// Coming-up group: soonest-due first.
+function soonSort(a, b) {
+  return (daysUntilDue(a) - daysUntilDue(b)) || a.name.localeCompare(b.name);
+}
+
 // Due view: never-logged first, then longest-overdue first.
 function dueSort(a, b) {
   const da = stats(a.id).daysSince, dbb = stats(b.id).daysSince;
@@ -801,10 +840,13 @@ function renderSwatches(container, selected, onChange) {
 
 // Renders the three-way Reminders control. `prefix` namespaces the ids/radios
 // ('h' for the add form, 'hs' for the habit screen).
-function dueControlHtml(prefix, mode, days) {
+function dueControlHtml(prefix, mode, days, lead) {
   mode = mode || "none";
   days = days || 7;
+  lead = lead || 0;
   const r = (v) => (v === mode ? " checked" : "");
+  const leadOpts = [0, 1, 2, 3].map((n) =>
+    `<option value="${n}"${n === lead ? " selected" : ""}>${n === 0 ? "on the day it's due" : n + " day" + (n === 1 ? "" : "s") + " before"}</option>`).join("");
   return `
     <fieldset class="due-field">
       <legend>Reminders</legend>
@@ -812,6 +854,7 @@ function dueControlHtml(prefix, mode, days) {
         <input id="${prefix}-recur" type="number" min="1" value="${days}" class="num" /> days</label>
       <label class="radio"><input type="radio" name="${prefix}-due" value="interval"${r("interval")} /> Automatic — learn my pattern</label>
       <label class="radio"><input type="radio" name="${prefix}-due" value="none"${r("none")} /> Just track (no reminders)</label>
+      <label class="lead-row">Nudge me <select id="${prefix}-lead">${leadOpts}</select></label>
     </fieldset>`;
 }
 
@@ -819,15 +862,24 @@ function readDueControl(prefix) {
   const sel = document.querySelector(`input[name="${prefix}-due"]:checked`);
   const mode = sel ? sel.value : "none";
   const days = Number($(`${prefix}-recur`).value) || null;
-  return { due_mode: mode, recurrence_days: mode === "recurrence" ? days : null };
+  const lead = Number($(`${prefix}-lead`).value) || 0;
+  return {
+    due_mode: mode,
+    recurrence_days: mode === "recurrence" ? days : null,
+    reminder_lead_days: mode === "none" ? 0 : lead,
+  };
 }
 
-// Grey out the "every N days" input unless the recurrence radio is selected.
+// Grey out "every N days" unless recurrence is selected; hide the lead picker
+// entirely for "just track" (which has no due point to lead into).
 function wireDueControl(prefix) {
   const recur = $(`${prefix}-recur`);
+  const leadRow = $(`${prefix}-lead`).closest(".lead-row");
   const sync = () => {
     const sel = document.querySelector(`input[name="${prefix}-due"]:checked`);
-    recur.disabled = !sel || sel.value !== "recurrence";
+    const mode = sel ? sel.value : "none";
+    recur.disabled = mode !== "recurrence";
+    if (leadRow) leadRow.style.display = mode === "none" ? "none" : "";
   };
   document.querySelectorAll(`input[name="${prefix}-due"]`).forEach((el) => el.addEventListener("change", sync));
   sync();
@@ -941,8 +993,11 @@ function updateTile(habitId) {
   if (!tile) return;
   const h = habits.find((x) => x.id === habitId);
   const { count, daysSince } = stats(habitId);
-  const overdue = isOverdue(h, daysSince);
-  tile.classList.toggle("overdue", overdue);
+  const status = dueStatus(h, daysSince);
+  tile.classList.toggle("overdue", status === "overdue");
+  tile.classList.toggle("soon", status === "soon");
+  const badge = tile.querySelector(".due-badge");
+  if (badge) badge.textContent = status === "soon" ? "SOON" : "DUE";
   tile.querySelector(".stat").textContent = sinceText(daysSince);
   tile.querySelector(".count").textContent = `${count}×`;
 }
@@ -987,7 +1042,7 @@ $("h-cancel").addEventListener("click", () => { $("modal").classList.add("hidden
 function openAddHabit() {
   $("habit-form").reset();
   $("h-emoji").value = "✅";
-  $("h-due-control").innerHTML = dueControlHtml("h", "none", 7);
+  $("h-due-control").innerHTML = dueControlHtml("h", "none", 7, 0);
   wireDueControl("h");
   newHabitColor = null;
   renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
@@ -1057,7 +1112,7 @@ function prefillHabitForm(s) {
   $("h-emoji").value = s.emoji;
   $("h-name").value = s.name;
   $("h-type").value = s.type;
-  $("h-due-control").innerHTML = dueControlHtml("h", s.days ? "recurrence" : "none", s.days || 7);
+  $("h-due-control").innerHTML = dueControlHtml("h", s.days ? "recurrence" : "none", s.days || 7, 0);
   wireDueControl("h");
   newHabitColor = null;
   renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
@@ -1075,6 +1130,7 @@ $("habit-form").addEventListener("submit", async (e) => {
     color: newHabitColor,
     due_mode: due.due_mode,
     recurrence_days: due.recurrence_days,
+    reminder_lead_days: due.reminder_lead_days,
     sort_order: habits.length,
   }).select().single();
   if (error) return alert(error.message);
