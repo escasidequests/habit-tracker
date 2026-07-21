@@ -55,7 +55,7 @@ const DAY = 86400000;
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "14";
+const APP_BUILD = "15";
 
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [logged_at Date, ...]
@@ -119,12 +119,18 @@ $("signup").addEventListener("click", async () => {
 });
 
 $("forgot").addEventListener("click", async () => {
-  const email = $("email").value.trim();
-  if (!email) { $("auth-msg").textContent = "Enter your email above first, then tap “Forgot password?”."; return; }
-  const { error } = await db.auth.resetPasswordForEmail(email, { redirectTo: appUrl() });
-  $("auth-msg").textContent = error
-    ? friendlyAuthError(error)
-    : "Check your email for a link to reset your password.";
+  let email = $("email").value.trim();
+  if (!email) email = (prompt("Enter your account email to reset your password:") || "").trim();
+  if (!email) return;
+  $("auth-msg").textContent = "Sending reset email…"; // instant feedback, before any network call
+  try {
+    const { error } = await db.auth.resetPasswordForEmail(email, { redirectTo: appUrl() });
+    $("auth-msg").textContent = error
+      ? friendlyAuthError(error)
+      : "Check your email for a link to reset your password.";
+  } catch (err) {
+    $("auth-msg").textContent = "Couldn't send reset email: " + (err && err.message ? err.message : err);
+  }
 });
 
 $("reset-form").addEventListener("submit", async (e) => {
