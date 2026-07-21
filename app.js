@@ -55,7 +55,7 @@ const DAY = 86400000;
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "19";
+const APP_BUILD = "20";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -565,6 +565,7 @@ function renderHabitScreen() {
 
       <section class="card-section">
         <h3>Edit habit</h3>
+        <button data-act="save">Save changes</button>
         <label>Emoji <input id="hs-emoji" maxlength="8" value="${escapeAttr(h.emoji)}" /></label>
         <label>Name <input id="hs-name" value="${escapeAttr(h.name)}" /></label>
         <label>Type
@@ -580,7 +581,6 @@ function renderHabitScreen() {
         <label class="row"><input id="hs-pinned" type="checkbox"${h.pinned ? " checked" : ""} /> Pin to top</label>
         <label class="row"><input id="hs-paused" type="checkbox"${h.paused ? " checked" : ""} /> Paused (no reminders)</label>
         <label class="row"><input id="hs-hidden" type="checkbox"${h.hidden ? " checked" : ""} /> Hide from main view</label>
-        <button data-act="save">Save changes</button>
       </section>
 
       <button class="wide danger" data-act="delete">Delete habit</button>

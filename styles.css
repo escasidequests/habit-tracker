@@ -302,8 +302,8 @@ button:disabled { opacity: .5; cursor: default; }
   padding: 8px; align-self: center; text-decoration: underline; cursor: pointer;
 }
 
-/* Reorder mode */
-.grid-wrap.reordering .tile { cursor: grab; border-style: dashed; }
+/* Reorder mode — touch-action:none so the drag isn't swallowed as a page scroll */
+.grid-wrap.reordering .tile { cursor: grab; border-style: dashed; touch-action: none; }
 .grid-wrap.reordering .tile.dragging { opacity: .6; cursor: grabbing; transform: scale(1.04); }
 .reorder-hint { font-size: 12px; color: var(--overdue); text-align: center; margin: 0 16px 8px; }
 
@@ -312,6 +312,8 @@ button:disabled { opacity: .5; cursor: default; }
 .hist-note { font-size: 12px; color: var(--muted); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note-btn { background: none; border: 0; color: var(--muted); font-size: 15px; padding: 2px 6px; flex: none; cursor: pointer; }
 .note-btn.has-note { color: var(--people); }
+/* Note editor opens from the habit screen (z 40), so it must sit above it. */
+#note-editor { z-index: 50; place-items: center; }
 .note-editor textarea {
   width: 100%; background: var(--card-2); border: 1px solid #313a46; color: var(--text);
   border-radius: 10px; padding: 10px; font-size: 15px; font-family: inherit; resize: vertical; min-height: 72px;
