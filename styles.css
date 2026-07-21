@@ -312,6 +312,21 @@ button:disabled { opacity: .5; cursor: default; }
 .hist-note { font-size: 12px; color: var(--muted); font-style: italic; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .note-btn { background: none; border: 0; color: var(--muted); font-size: 15px; padding: 2px 6px; flex: none; cursor: pointer; }
 .note-btn.has-note { color: var(--people); }
+/* Save confirmation — centered checkmark that pops and fades */
+.save-flash { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; pointer-events: none; }
+.save-flash .check {
+  width: 96px; height: 96px; border-radius: 50%; background: var(--good);
+  display: grid; place-items: center; color: #fff; font-size: 52px; font-weight: 800;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .45);
+  animation: savepop .9s cubic-bezier(.34, 1.56, .64, 1) forwards;
+}
+@keyframes savepop {
+  0%   { opacity: 0; transform: scale(.4); }
+  25%  { opacity: 1; transform: scale(1.12); }
+  60%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1); }
+}
+
 /* Note editor opens from the habit screen (z 40), so it must sit above it. */
 #note-editor { z-index: 50; place-items: center; }
 .note-editor textarea {

@@ -55,7 +55,7 @@ const DAY = 86400000;
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "20";
+const APP_BUILD = "21";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -645,7 +645,7 @@ function renderHabitScreen() {
     if (error) return alert(error.message);
     Object.assign(h, patch);
     renderHabitScreen(); render();
-    showToast("Saved changes");
+    flashSuccess();
   });
 
   panel.querySelector('[data-act="delete"]').addEventListener("click", async () => {
@@ -874,6 +874,17 @@ function updateTile(habitId) {
   tile.classList.toggle("overdue", overdue);
   tile.querySelector(".stat").textContent = sinceText(daysSince);
   tile.querySelector(".count").textContent = `${count}×`;
+}
+
+// Big centered checkmark that pops in and fades — used to confirm a save.
+// Rendered on <body> so it survives the screen re-render underneath it.
+function flashSuccess() {
+  const el = document.createElement("div");
+  el.className = "save-flash";
+  el.innerHTML = '<div class="check">✓</div>';
+  document.body.appendChild(el);
+  buzz();
+  setTimeout(() => el.remove(), 900);
 }
 
 let toastTimer = null;

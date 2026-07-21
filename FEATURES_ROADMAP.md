@@ -95,6 +95,12 @@ Each is small and can ship in any order.
 - **[#16] Trophies / achievements** — interesting for a future iteration; watch that it doesn't
   cut against the "no streaks, no shame" ethos.
 
+## Polish backlog (shipped but wants refinement)
+- **Drag-to-reorder UX** (Phase 2, Build 20) — works, but it's the basic version: tiles snap to
+  their slot as you drag over a neighbor, with no floating "ghost" tile following the finger and no
+  gap/slide animation. Julia wants this polished later. Ideas: a lifted ghost element that tracks the
+  pointer, animated gap opening, auto-scroll near screen edges, subtle haptic on drop (Android only).
+
 ## Declined
 - **[#15] Biometric / FaceID app lock** — not needed.
 
