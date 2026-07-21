@@ -166,10 +166,11 @@ function buildTile(h) {
   tile.dataset.habitId = h.id;
   tile.style.setProperty("--type", t ? t.color : "var(--neutral)");
   tile.innerHTML = `
+    <span class="due-badge">DUE</span>
     <div class="emoji">${h.emoji}</div>
     <div class="name">${escapeHtml(h.name)}</div>
     <div class="stat">${sinceText(daysSince)}</div>
-    <div class="count">${count}×${overdue ? " · due" : ""}</div>`;
+    <div class="count">${count}×</div>`;
   attachTileGestures(tile, h);
   return tile;
 }
@@ -537,7 +538,7 @@ function updateTile(habitId) {
   const overdue = isOverdue(h, daysSince);
   tile.classList.toggle("overdue", overdue);
   tile.querySelector(".stat").textContent = sinceText(daysSince);
-  tile.querySelector(".count").textContent = `${count}×${overdue ? " · due" : ""}`;
+  tile.querySelector(".count").textContent = `${count}×`;
 }
 
 let toastTimer = null;
