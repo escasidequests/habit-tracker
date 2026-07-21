@@ -18,7 +18,18 @@
       <input id="password" type="password" placeholder="Password" autocomplete="current-password" required />
       <button id="signin" type="submit">Sign in</button>
       <button id="signup" type="button" class="secondary">Create account</button>
+      <button id="forgot" type="button" class="linkbtn">Forgot password?</button>
       <p id="auth-msg" class="msg"></p>
+    </form>
+  </section>
+
+  <!-- Set-new-password (shown when arriving via a reset link) -->
+  <section id="reset" class="auth hidden">
+    <form id="reset-form" class="auth-card">
+      <h1>Set a new password</h1>
+      <input id="new-password" type="password" placeholder="New password" autocomplete="new-password" required />
+      <button type="submit">Update password</button>
+      <p id="reset-msg" class="msg"></p>
     </form>
   </section>
 
@@ -35,8 +46,18 @@
       </header>
       <nav id="tabs" class="tabs"></nav>
     </div>
+    <div id="install-tip" class="banner hidden">
+      <span>📲 Add this to your Home Screen (Share → Add to Home Screen) to get reminders.</span>
+      <button id="install-dismiss" title="Dismiss">✕</button>
+    </div>
     <div id="grid" class="grid-wrap"></div>
-    <p id="empty" class="msg hidden">No habits yet — tap “+ Habit” to add one.</p>
+    <div id="empty" class="empty-welcome hidden">
+      <div class="ew-emoji">👋</div>
+      <h2>Welcome!</h2>
+      <p class="msg">Track anything you want to do more — or less — of.</p>
+      <button id="empty-suggest" class="wide">✨ Start with suggestions</button>
+      <p class="hint" style="margin-top:10px">or tap “+ Habit” to add your own</p>
+    </div>
     <p class="hint">Tap a habit to log it · press &amp; hold for options</p>
   </section>
 

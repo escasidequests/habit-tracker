@@ -55,7 +55,7 @@ const DAY = 86400000;
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "13";
+const APP_BUILD = "14";
 
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [logged_at Date, ...]
@@ -71,7 +71,25 @@ async function refreshSession() {
 function showApp(loggedIn) {
   $("app").classList.toggle("hidden", !loggedIn);
   $("auth").classList.toggle("hidden", loggedIn);
+  if (loggedIn) maybeShowInstallTip();
 }
+
+// iPhone users in Safari (not installed) miss out on reminders — nudge them once.
+function maybeShowInstallTip() {
+  const show = isIOS && !isStandalone() && !localStorage.getItem("installTipDismissed");
+  $("install-tip").classList.toggle("hidden", !show);
+}
+$("install-dismiss").addEventListener("click", () => {
+  localStorage.setItem("installTipDismissed", "1");
+  $("install-tip").classList.add("hidden");
+});
+
+// Empty-state shortcut straight into the suggestions browser.
+$("empty-suggest").addEventListener("click", () => {
+  $("habit-form").reset();
+  $("modal").classList.remove("hidden");
+  openSuggestions();
+});
 
 $("auth-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -79,25 +97,76 @@ $("auth-form").addEventListener("submit", async (e) => {
     email: $("email").value.trim(),
     password: $("password").value,
   });
-  $("auth-msg").textContent = error ? error.message : "";
+  $("auth-msg").textContent = error ? friendlyAuthError(error) : "";
   if (!error) refreshSession();
 });
 
 $("signup").addEventListener("click", async () => {
+  const email = $("email").value.trim();
+  if (!email || !$("password").value) {
+    $("auth-msg").textContent = "Enter an email and password first.";
+    return;
+  }
   const { data, error } = await db.auth.signUp({
-    email: $("email").value.trim(),
+    email,
     password: $("password").value,
+    options: { emailRedirectTo: appUrl() }, // land back on THIS app after confirming
   });
-  if (error) { $("auth-msg").textContent = error.message; return; }
+  if (error) { $("auth-msg").textContent = friendlyAuthError(error); return; }
   $("auth-msg").textContent = data.session
-    ? "" : "Account created — check your email to confirm, then sign in.";
+    ? "" : "Account created — check your email for a confirmation link, then sign in.";
   if (data.session) refreshSession();
+});
+
+$("forgot").addEventListener("click", async () => {
+  const email = $("email").value.trim();
+  if (!email) { $("auth-msg").textContent = "Enter your email above first, then tap “Forgot password?”."; return; }
+  const { error } = await db.auth.resetPasswordForEmail(email, { redirectTo: appUrl() });
+  $("auth-msg").textContent = error
+    ? friendlyAuthError(error)
+    : "Check your email for a link to reset your password.";
+});
+
+$("reset-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const { error } = await db.auth.updateUser({ password: $("new-password").value });
+  if (error) { $("reset-msg").textContent = friendlyAuthError(error); return; }
+  $("reset").classList.add("hidden");
+  $("new-password").value = "";
+  refreshSession();
 });
 
 $("signout").addEventListener("click", async () => {
   await db.auth.signOut();
   showApp(false);
 });
+
+// When the user arrives via a password-reset link, Supabase fires this event.
+db.auth.onAuthStateChange((event) => {
+  if (event === "PASSWORD_RECOVERY") {
+    $("app").classList.add("hidden");
+    $("auth").classList.add("hidden");
+    $("reset").classList.remove("hidden");
+  }
+});
+
+// This app's own URL (origin + path), used as the auth redirect target.
+function appUrl() {
+  return window.location.origin + window.location.pathname;
+}
+
+// Turn raw Supabase auth errors into friendly, human messages.
+function friendlyAuthError(error) {
+  const m = (error && error.message) || "Something went wrong.";
+  const low = m.toLowerCase();
+  if (low.includes("invalid login")) return "Wrong email or password.";
+  if (low.includes("email not confirmed")) return "Please confirm your email first — check your inbox.";
+  if (low.includes("already registered") || low.includes("already been registered")) return "That email already has an account — try signing in.";
+  if (low.includes("password should be") || low.includes("at least")) return "Password is too short — use at least 6 characters.";
+  if (low.includes("unable to validate email") || low.includes("invalid format")) return "That doesn't look like a valid email.";
+  if (low.includes("rate limit") || low.includes("too many")) return "Too many attempts — wait a minute and try again.";
+  return m;
+}
 
 /* ---------- Data ---------- */
 
