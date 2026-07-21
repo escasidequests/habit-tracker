@@ -110,6 +110,13 @@ button.secondary { background: transparent; border: 1px solid #3a4552; color: va
 .modal-card label.row { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text); }
 .modal-card .num { width: 60px; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.suggest-btn {
+  width: 100%; display: flex; align-items: center; justify-content: space-between;
+  background: var(--card-2); border: 1px solid #3a4552; color: var(--text);
+  font-weight: 600; font-size: 15px;
+}
+.suggest-btn span { color: var(--muted); font-size: 18px; }
+.suggest-tile .count { color: var(--muted); }
 
 /* Tap feedback — visual only (iOS has no web haptics; Android still vibrates via buzz()). */
 .tile.pop { animation: pop .34s cubic-bezier(.34, 1.56, .64, 1), popflash .5s ease; }

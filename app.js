@@ -21,6 +21,34 @@ const VIEWS = [
 ];
 let currentView = localStorage.getItem("habitView") || "due";
 
+// Curated starter habits. `days` (when present) pre-fills a reminder threshold;
+// bad/neutral habits omit it since a "days since" nudge doesn't fit them.
+const SUGGESTIONS = [
+  { emoji: "🏋️", name: "Workout", type: "good", days: 2 },
+  { emoji: "🧘", name: "Meditate", type: "good", days: 2 },
+  { emoji: "🦷", name: "Floss", type: "good", days: 1 },
+  { emoji: "📖", name: "Read", type: "good", days: 3 },
+  { emoji: "🚶", name: "Walk", type: "good", days: 2 },
+  { emoji: "✍️", name: "Journal", type: "good", days: 3 },
+  { emoji: "💧", name: "Drink water", type: "good", days: 1 },
+  { emoji: "🚬", name: "Smoke", type: "bad" },
+  { emoji: "🍺", name: "Alcohol", type: "bad" },
+  { emoji: "🍭", name: "Junk food", type: "bad" },
+  { emoji: "📱", name: "Doomscroll", type: "bad" },
+  { emoji: "🛒", name: "Impulse buy", type: "bad" },
+  { emoji: "☕", name: "Coffee", type: "neutral" },
+  { emoji: "🎮", name: "Gaming", type: "neutral" },
+  { emoji: "📺", name: "Watch a show", type: "neutral" },
+  { emoji: "💤", name: "Nap", type: "neutral" },
+  { emoji: "🤙", name: "Call parents", type: "people_hangcall", days: 7 },
+  { emoji: "👵", name: "Call grandparents", type: "people_hangcall", days: 14 },
+  { emoji: "🍽️", name: "Dinner with friends", type: "people_hangcall", days: 14 },
+  { emoji: "🧑‍🤝‍🧑", name: "See friends", type: "people_hangcall", days: 10 },
+  { emoji: "💬", name: "Text a friend", type: "people_text", days: 7 },
+  { emoji: "👋", name: "Reconnect with someone", type: "people_text", days: 30 },
+  { emoji: "📨", name: "Check in with sibling", type: "people_text", days: 14 },
+];
+
 const $ = (id) => document.getElementById(id);
 const DAY = 86400000;
 // Touch-primary devices (phones/tablets) get swipe-to-delete; mouse-primary gets checkboxes.
@@ -563,8 +591,70 @@ function hideToast() {
 
 /* ---------- Add habit modal ---------- */
 
-$("add-habit").addEventListener("click", () => $("modal").classList.remove("hidden"));
-$("h-cancel").addEventListener("click", () => $("modal").classList.add("hidden"));
+$("add-habit").addEventListener("click", () => { $("habit-form").reset(); $("modal").classList.remove("hidden"); });
+$("h-cancel").addEventListener("click", () => { $("modal").classList.add("hidden"); $("habit-form").reset(); });
+
+/* ---------- Suggested habits ---------- */
+
+$("open-suggestions").addEventListener("click", openSuggestions);
+
+function openSuggestions() {
+  let panel = $("suggest-screen");
+  if (!panel) {
+    panel = document.createElement("section");
+    panel.id = "suggest-screen";
+    panel.className = "screen";
+    document.body.appendChild(panel);
+  }
+  const have = new Set(habits.map((h) => h.name.trim().toLowerCase()));
+
+  let body = "";
+  for (const t of TYPES) {
+    const items = SUGGESTIONS
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.type === t.key && !have.has(s.name.toLowerCase()));
+    if (!items.length) continue;
+    body += `<section class="card-section"><h3>${t.label}</h3><div class="tiles">` +
+      items.map(({ s, i }) => `
+        <div class="tile suggest-tile" data-i="${i}" style="--type:${t.color}">
+          <div class="emoji">${s.emoji}</div>
+          <div class="name">${escapeHtml(s.name)}</div>
+          ${s.days ? `<div class="count">remind ${s.days}d</div>` : ""}
+        </div>`).join("") +
+      `</div></section>`;
+  }
+  if (!body) body = '<p class="msg" style="margin-top:40px">You\'ve added all the suggestions! 🎉</p>';
+
+  panel.innerHTML = `
+    <header class="screen-head">
+      <button class="back" data-act="back">‹ Back</button>
+      <div class="screen-title">✨ Suggested habits</div>
+      <span class="spacer"></span>
+    </header>
+    <div class="screen-body">${body}</div>`;
+
+  panel.querySelector('[data-act="back"]').addEventListener("click", closeSuggestions);
+  panel.querySelectorAll(".suggest-tile").forEach((el) => el.addEventListener("click", () => {
+    closeSuggestions();
+    prefillHabitForm(SUGGESTIONS[Number(el.dataset.i)]);
+  }));
+  requestAnimationFrame(() => panel.classList.add("show"));
+}
+
+function closeSuggestions() {
+  const p = $("suggest-screen");
+  if (p) p.remove();
+}
+
+// Drop a suggestion into the (already-open) New habit form for editing.
+function prefillHabitForm(s) {
+  $("modal").classList.remove("hidden");
+  $("h-emoji").value = s.emoji;
+  $("h-name").value = s.name;
+  $("h-type").value = s.type;
+  $("h-remind").checked = !!s.days;
+  $("h-threshold").value = s.days || 7;
+}
 
 $("habit-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -591,7 +681,9 @@ $("habit-form").addEventListener("submit", async (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if ($("tile-menu")) closeTileMenu();
+  else if ($("suggest-screen")) closeSuggestions();
   else if (screenHabitId) closeHabitScreen();
+  else if (!$("modal").classList.contains("hidden")) { $("modal").classList.add("hidden"); $("habit-form").reset(); }
 });
 
 /* ---------- Boot ---------- */
