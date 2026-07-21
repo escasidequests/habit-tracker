@@ -223,6 +223,8 @@ button.ghost { background: transparent; color: var(--muted); border: 0; }
 .screen .row input { flex: 1; min-width: 0; }
 
 .history { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+/* Keep rows at natural height so a long history scrolls instead of squishing. */
+.history > * { flex: none; }
 .hist-row { display: flex; align-items: center; justify-content: space-between; background: var(--card-2); border-radius: 8px; padding: 8px 12px; font-size: 14px; }
 
 /* Mobile: swipe-to-reveal delete */
