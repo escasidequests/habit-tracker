@@ -53,6 +53,9 @@ const $ = (id) => document.getElementById(id);
 const DAY = 86400000;
 // Touch-primary devices (phones/tablets) get swipe-to-delete; mouse-primary gets checkboxes.
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
+// Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
+// screen so you can confirm a deploy actually landed after refreshing.
+const APP_BUILD = "12";
 
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [logged_at Date, ...]
@@ -677,10 +680,155 @@ $("habit-form").addEventListener("submit", async (e) => {
   render();
 });
 
+/* ---------- Push notifications ---------- */
+
+const pushSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+function isStandalone() {
+  return window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
+}
+
+$("notif-btn").addEventListener("click", openNotifScreen);
+
+function openNotifScreen() {
+  let panel = $("notif-screen");
+  if (!panel) {
+    panel = document.createElement("section");
+    panel.id = "notif-screen";
+    panel.className = "screen";
+    document.body.appendChild(panel);
+  }
+  renderNotifScreen();
+  requestAnimationFrame(() => panel.classList.add("show"));
+}
+
+function closeNotifScreen() {
+  const p = $("notif-screen");
+  if (p) p.remove();
+}
+
+async function renderNotifScreen() {
+  const panel = $("notif-screen");
+  if (!panel) return;
+
+  const perm = pushSupported ? Notification.permission : "unsupported";
+  const standalone = isStandalone();
+  let subscribed = false;
+  if (pushSupported) {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      subscribed = !!(await reg.pushManager.getSubscription());
+    } catch (_) {}
+  }
+
+  let guidance = "";
+  if (!pushSupported) {
+    guidance = `<div class="notice">This browser doesn't support web push notifications.</div>`;
+  } else if (isIOS && !standalone) {
+    guidance = `<div class="notice">On iPhone, notifications only work when this app is
+      <b>added to your Home Screen</b>. In Safari tap the <b>Share</b> icon →
+      <b>Add to Home Screen</b>, then open the app from that icon and come back here.</div>`;
+  }
+
+  const canEnable = pushSupported && (!isIOS || standalone) && perm !== "denied";
+  const deniedNote = perm === "denied"
+    ? `<p class="msg">Notifications are blocked. Turn them on for this app in your device settings, then reopen this screen.</p>`
+    : "";
+
+  panel.innerHTML = `
+    <header class="screen-head">
+      <button class="back" data-act="back">‹ Back</button>
+      <div class="screen-title">🔔 Notifications</div>
+      <span class="spacer"></span>
+    </header>
+    <div class="screen-body">
+      ${guidance}
+      <section class="card-section">
+        <h3>Status</h3>
+        <div class="kv"><span>Push supported</span><b>${pushSupported ? "Yes" : "No"}</b></div>
+        <div class="kv"><span>Added to Home Screen</span><b>${standalone ? "Yes" : "No"}</b></div>
+        <div class="kv"><span>Permission</span><b>${perm}</b></div>
+        <div class="kv"><span>Subscribed on this device</span><b>${subscribed ? "Yes" : "No"}</b></div>
+      </section>
+      ${deniedNote}
+      <button class="wide" data-act="enable"${canEnable ? "" : " disabled"}>
+        ${subscribed ? "Re-subscribe this device" : "Enable notifications"}
+      </button>
+      <button class="wide secondary" data-act="test"${perm === "granted" ? "" : " disabled"}>Send a test notification</button>
+      <p class="hint">The test fires a notification straight from this device (no server needed) to
+        confirm they show up. Scheduled "habit due" reminders arrive once the backend is set up.</p>
+      <p class="hint" style="margin-top:0">Build ${APP_BUILD}</p>
+    </div>`;
+
+  panel.querySelector('[data-act="back"]').addEventListener("click", closeNotifScreen);
+  panel.querySelector('[data-act="enable"]').addEventListener("click", enableNotifications);
+  panel.querySelector('[data-act="test"]').addEventListener("click", testNotification);
+}
+
+async function enableNotifications() {
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") { renderNotifScreen(); return; }
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(cfg.VAPID_PUBLIC_KEY),
+      });
+    }
+    // Best-effort: persist to Supabase. If the table isn't there yet, we still succeed locally.
+    try { await savePushSubscription(sub); }
+    catch (err) { console.warn("Subscription not saved to Supabase yet:", err.message); }
+    renderNotifScreen();
+    showToast("Notifications enabled");
+  } catch (err) {
+    alert("Couldn't enable notifications: " + err.message);
+  }
+}
+
+async function testNotification() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    await reg.showNotification("Habit Tracker", {
+      body: "Test notification — it works! 🎉",
+      icon: "./icon-192.png",
+      badge: "./icon-192.png",
+      tag: "habit-test",
+    });
+  } catch (err) {
+    alert("Test failed: " + err.message);
+  }
+}
+
+async function savePushSubscription(sub) {
+  const { data: u } = await db.auth.getUser();
+  const j = sub.toJSON();
+  const { error } = await db.from("push_subscriptions").upsert({
+    user_id: u.user.id,
+    endpoint: j.endpoint,
+    p256dh: j.keys.p256dh,
+    auth: j.keys.auth,
+    user_agent: navigator.userAgent,
+  }, { onConflict: "endpoint" });
+  if (error) throw error;
+}
+
+// VAPID public key (base64url) → Uint8Array, as pushManager.subscribe requires.
+function urlB64ToUint8Array(base64) {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
 // Escape closes the popup first, then the habit screen.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if ($("tile-menu")) closeTileMenu();
+  else if ($("notif-screen")) closeNotifScreen();
   else if ($("suggest-screen")) closeSuggestions();
   else if (screenHabitId) closeHabitScreen();
   else if (!$("modal").classList.contains("hidden")) { $("modal").classList.add("hidden"); $("habit-form").reset(); }
