@@ -61,7 +61,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "25";
+const APP_BUILD = "26";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -1200,6 +1200,109 @@ $("habit-form").addEventListener("submit", async (e) => {
   render();
 });
 
+/* ---------- Settings screen + data export ---------- */
+
+$("settings-btn").addEventListener("click", openSettingsScreen);
+
+function openSettingsScreen() {
+  let panel = $("settings-screen");
+  if (!panel) {
+    panel = document.createElement("section");
+    panel.id = "settings-screen";
+    panel.className = "screen";
+    document.body.appendChild(panel);
+  }
+  renderSettingsScreen();
+  requestAnimationFrame(() => panel.classList.add("show"));
+}
+
+function closeSettingsScreen() {
+  const p = $("settings-screen");
+  if (p) p.remove();
+}
+
+function renderSettingsScreen() {
+  const panel = $("settings-screen");
+  if (!panel) return;
+  const habitCount = habits.length;
+  const logCount = Object.values(entriesByHabit).reduce((s, l) => s + l.length, 0);
+  panel.innerHTML = `
+    <header class="screen-head">
+      <button class="back" data-act="back">‹ Back</button>
+      <div class="screen-title">⚙️ Settings</div>
+      <span class="spacer"></span>
+    </header>
+    <div class="screen-body">
+      <section class="card-section">
+        <h3>Your data</h3>
+        <p class="hint" style="margin:0">${habitCount} habit${habitCount === 1 ? "" : "s"} · ${logCount} log${logCount === 1 ? "" : "s"}. Export a copy anytime — it's yours.</p>
+        <button class="wide" data-act="json">⬇︎ Export JSON (full backup)</button>
+        <button class="wide secondary" data-act="csv">⬇︎ Export CSV (logs for spreadsheets)</button>
+      </section>
+      <p class="hint" style="margin-top:0">Build ${APP_BUILD}</p>
+    </div>`;
+  panel.querySelector('[data-act="back"]').addEventListener("click", closeSettingsScreen);
+  panel.querySelector('[data-act="json"]').addEventListener("click", exportJSON);
+  panel.querySelector('[data-act="csv"]').addEventListener("click", exportCSV);
+}
+
+// All logs as flat rows, joined to their habit later.
+function allEntriesFlat() {
+  const out = [];
+  for (const [habitId, list] of Object.entries(entriesByHabit)) {
+    for (const e of list) out.push({ id: e.id, habit_id: habitId, logged_at: e.at.toISOString(), note: e.note || "" });
+  }
+  return out;
+}
+
+function todayStamp() { return new Date().toISOString().slice(0, 10); }
+
+// Full-fidelity backup: every habit field + every log.
+function exportJSON() {
+  const data = {
+    app: "habit-tracker",
+    build: APP_BUILD,
+    exported_at: new Date().toISOString(),
+    habits,
+    entries: allEntriesFlat(),
+  };
+  downloadFile(`habit-tracker-backup-${todayStamp()}.json`, JSON.stringify(data, null, 2), "application/json");
+  showToast("Exported JSON backup");
+}
+
+// One row per log, denormalized with its habit's details — easy to pivot.
+function exportCSV() {
+  const byId = Object.fromEntries(habits.map((h) => [h.id, h]));
+  const rows = allEntriesFlat().sort((a, b) => (a.logged_at < b.logged_at ? -1 : 1));
+  const header = ["logged_at", "habit", "type", "emoji", "color", "note"];
+  const lines = [header.join(",")];
+  for (const e of rows) {
+    const h = byId[e.habit_id] || {};
+    lines.push([e.logged_at, h.name || "", h.type || "", h.emoji || "", h.color || "", e.note].map(csvCell).join(","));
+  }
+  downloadFile(`habit-tracker-logs-${todayStamp()}.csv`, lines.join("\n"), "text/csv");
+  showToast("Exported CSV");
+}
+
+// CSV cell: quote + escape if it contains a comma, quote, or newline.
+function csvCell(v) {
+  const s = v == null ? "" : String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// Trigger a client-side download of text content.
+function downloadFile(filename, text, mime) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /* ---------- Push notifications ---------- */
 
 const pushSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
@@ -1392,6 +1495,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if ($("note-editor")) $("note-editor").remove();
   else if ($("tile-menu")) closeTileMenu();
+  else if ($("settings-screen")) closeSettingsScreen();
   else if ($("notif-screen")) closeNotifScreen();
   else if ($("suggest-screen")) closeSuggestions();
   else if (screenHabitId) closeHabitScreen();
