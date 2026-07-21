@@ -109,7 +109,22 @@
   <script src="app.js"></script>
   <script>
     if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+      window.addEventListener("load", async () => {
+        const hadController = !!navigator.serviceWorker.controller;
+        let refreshing = false;
+        // When an updated service worker takes control, reload once to pick up the
+        // fresh assets. Skipped on first install (no prior controller) so a brand-new
+        // visitor isn't reloaded needlessly.
+        navigator.serviceWorker.addEventListener("controllerchange", () => {
+          if (refreshing || !hadController) return;
+          refreshing = true;
+          window.location.reload();
+        });
+        try {
+          const reg = await navigator.serviceWorker.register("sw.js");
+          reg.update(); // check for a new version on every load
+        } catch (_) {}
+      });
     }
   </script>
 </body>
