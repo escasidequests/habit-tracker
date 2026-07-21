@@ -41,14 +41,34 @@ button {
 button.secondary { background: transparent; border: 1px solid #3a4552; color: var(--text); }
 
 /* Top bar */
+.stickyhead { position: sticky; top: 0; z-index: 5; background: var(--bg); }
 .topbar {
-  position: sticky; top: 0; z-index: 5; background: var(--bg);
   display: flex; align-items: center; justify-content: space-between;
-  padding: 16px; border-bottom: 1px solid #232a34;
+  padding: 16px;
 }
 .topbar h1 { font-size: 20px; margin: 0; }
 .topbar-actions { display: flex; gap: 8px; }
 .pill { padding: 8px 14px; font-size: 14px; border-radius: 999px; }
+
+/* Tabs */
+.tabs {
+  display: flex; gap: 6px; padding: 0 16px 12px; overflow-x: auto;
+  border-bottom: 1px solid #232a34; scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: none; display: inline-flex; align-items: center; gap: 6px;
+  background: var(--card); color: var(--muted); border: 1px solid #2a323d;
+  padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
+  white-space: nowrap;
+}
+.tab.active { background: var(--people); color: #fff; border-color: var(--people); }
+.tab .badge {
+  background: var(--overdue); color: #111418; border-radius: 999px;
+  min-width: 18px; padding: 0 6px; font-size: 11px; font-weight: 800;
+  line-height: 18px; text-align: center;
+}
+.tab.active .badge { background: #fff; color: var(--people); }
 
 /* Grid */
 .grid-wrap { padding: 16px; display: flex; flex-direction: column; gap: 22px; }

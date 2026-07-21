@@ -11,6 +11,16 @@ const TYPES = [
   { key: "people_text", label: "People — Text", color: "var(--people)" },
 ];
 
+// Pages you can toggle between. `types: null` on "due" means "overdue only,
+// any type"; otherwise a view shows the listed types, grouped.
+const VIEWS = [
+  { key: "due", label: "Due", types: null },
+  { key: "positive", label: "Good & Neutral", types: ["good", "neutral"] },
+  { key: "bad", label: "Bad", types: ["bad"] },
+  { key: "people", label: "People", types: ["people_hangcall", "people_text"] },
+];
+let currentView = localStorage.getItem("habitView") || "due";
+
 const $ = (id) => document.getElementById(id);
 const DAY = 86400000;
 
@@ -93,47 +103,100 @@ function isOverdue(h, daysSince) {
 /* ---------- Render ---------- */
 
 function render() {
+  renderTabs();
   const grid = $("grid");
   grid.innerHTML = "";
   $("empty").classList.toggle("hidden", habits.length > 0);
+  if (!habits.length) return;
 
-  for (const t of TYPES) {
-    const inType = habits.filter((h) => h.type === t.key);
-    if (!inType.length) continue;
+  const view = VIEWS.find((v) => v.key === currentView) || VIEWS[0];
 
-    // overdue first, then alphabetical
-    inType.sort((a, b) => {
-      const oa = isOverdue(a, stats(a.id).daysSince), ob = isOverdue(b, stats(b.id).daysSince);
-      if (oa !== ob) return oa ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-
-    const group = document.createElement("div");
-    group.className = "group";
-    group.innerHTML = `<h2>${t.label}</h2><div class="tiles"></div>`;
-    const tiles = group.querySelector(".tiles");
-
-    for (const h of inType) {
-      const { count, daysSince } = stats(h.id);
-      const overdue = isOverdue(h, daysSince);
-      const tile = document.createElement("div");
-      tile.className = "tile" + (overdue ? " overdue" : "");
-      tile.dataset.habitId = h.id;
-      tile.style.setProperty("--type", t.color);
-      tile.innerHTML = `
-        <button class="more" title="Backdate / delete">⋯</button>
-        <div class="emoji" title="Change emoji">${h.emoji}</div>
-        <div class="name">${escapeHtml(h.name)}</div>
-        <div class="stat">${sinceText(daysSince)}</div>
-        <div class="count">${count}×${overdue ? " · due" : ""}</div>`;
-
-      tile.addEventListener("click", () => logNow(h.id, tile));
-      tile.querySelector(".emoji").addEventListener("click", (e) => { e.stopPropagation(); changeEmoji(h); });
-      tile.querySelector(".more").addEventListener("click", (e) => { e.stopPropagation(); moreMenu(h); });
-      tiles.appendChild(tile);
-    }
-    grid.appendChild(group);
+  if (view.key === "due") {
+    const due = habits.filter((h) => isOverdue(h, stats(h.id).daysSince)).sort(dueSort);
+    if (due.length) renderGroup(grid, "Due now", due);
+    else grid.appendChild(msgEl("Nothing due right now — you're all caught up. 🎉"));
+    return;
   }
+
+  let any = false;
+  for (const t of TYPES) {
+    if (!view.types.includes(t.key)) continue;
+    const inType = habits.filter((h) => h.type === t.key).sort(overdueFirstThenName);
+    if (inType.length) { renderGroup(grid, t.label, inType); any = true; }
+  }
+  if (!any) grid.appendChild(msgEl("No habits here yet — add one with “+ Habit”."));
+}
+
+// Tab bar across the top; the "Due" tab carries a live count badge.
+function renderTabs() {
+  const nav = $("tabs");
+  nav.innerHTML = "";
+  const dueCount = habits.filter((h) => isOverdue(h, stats(h.id).daysSince)).length;
+  for (const v of VIEWS) {
+    const btn = document.createElement("button");
+    btn.className = "tab" + (v.key === currentView ? " active" : "");
+    btn.innerHTML = escapeHtml(v.label) +
+      (v.key === "due" && dueCount ? ` <span class="badge">${dueCount}</span>` : "");
+    btn.addEventListener("click", () => {
+      currentView = v.key;
+      localStorage.setItem("habitView", v.key);
+      render();
+    });
+    nav.appendChild(btn);
+  }
+}
+
+function renderGroup(grid, label, list) {
+  const group = document.createElement("div");
+  group.className = "group";
+  group.innerHTML = `<h2>${escapeHtml(label)}</h2><div class="tiles"></div>`;
+  const tiles = group.querySelector(".tiles");
+  list.forEach((h) => tiles.appendChild(buildTile(h)));
+  grid.appendChild(group);
+}
+
+function buildTile(h) {
+  const t = TYPES.find((x) => x.key === h.type);
+  const { count, daysSince } = stats(h.id);
+  const overdue = isOverdue(h, daysSince);
+  const tile = document.createElement("div");
+  tile.className = "tile" + (overdue ? " overdue" : "");
+  tile.dataset.habitId = h.id;
+  tile.style.setProperty("--type", t ? t.color : "var(--neutral)");
+  tile.innerHTML = `
+    <button class="more" title="Backdate / delete">⋯</button>
+    <div class="emoji" title="Change emoji">${h.emoji}</div>
+    <div class="name">${escapeHtml(h.name)}</div>
+    <div class="stat">${sinceText(daysSince)}</div>
+    <div class="count">${count}×${overdue ? " · due" : ""}</div>`;
+  tile.addEventListener("click", () => logNow(h.id, tile));
+  tile.querySelector(".emoji").addEventListener("click", (e) => { e.stopPropagation(); changeEmoji(h); });
+  tile.querySelector(".more").addEventListener("click", (e) => { e.stopPropagation(); moreMenu(h); });
+  return tile;
+}
+
+// overdue first, then alphabetical — used within a type group.
+function overdueFirstThenName(a, b) {
+  const oa = isOverdue(a, stats(a.id).daysSince), ob = isOverdue(b, stats(b.id).daysSince);
+  if (oa !== ob) return oa ? -1 : 1;
+  return a.name.localeCompare(b.name);
+}
+
+// Due view: never-logged first, then longest-overdue first.
+function dueSort(a, b) {
+  const da = stats(a.id).daysSince, dbb = stats(b.id).daysSince;
+  if (da === null && dbb === null) return a.name.localeCompare(b.name);
+  if (da === null) return -1;
+  if (dbb === null) return 1;
+  return dbb - da;
+}
+
+function msgEl(text) {
+  const p = document.createElement("p");
+  p.className = "msg";
+  p.style.marginTop = "40px";
+  p.textContent = text;
+  return p;
 }
 
 function escapeHtml(s) {
@@ -150,6 +213,8 @@ async function logNow(habitId, tile) {
   updateTile(habitId);
   const h = habits.find((x) => x.id === habitId);
   showToast(`Logged ${h.emoji} ${h.name}`, () => undoLog(habitId, row.id));
+  // On the Due page a logged habit is no longer due — let the pop play, then re-render so it drops off.
+  if (currentView === "due") setTimeout(() => { if (currentView === "due") render(); }, 850);
 }
 
 // Insert an entry; returns the new row ({id}) or null on error.
@@ -173,7 +238,7 @@ async function undoLog(habitId, entryId) {
   const { error } = await db.from("entries").delete().eq("id", entryId);
   if (error) return alert(error.message);
   entriesByHabit[habitId] = (entriesByHabit[habitId] || []).filter((e) => e.id !== entryId);
-  updateTile(habitId);
+  if (currentView === "due") render(); else updateTile(habitId);
   hideToast();
 }
 

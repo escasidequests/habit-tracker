@@ -23,13 +23,16 @@
 
   <!-- App -->
   <section id="app" class="hidden">
-    <header class="topbar">
-      <h1>Habits</h1>
-      <div class="topbar-actions">
-        <button id="add-habit" class="pill">+ Habit</button>
-        <button id="signout" class="pill secondary">Sign out</button>
-      </div>
-    </header>
+    <div class="stickyhead">
+      <header class="topbar">
+        <h1>Habits</h1>
+        <div class="topbar-actions">
+          <button id="add-habit" class="pill">+ Habit</button>
+          <button id="signout" class="pill secondary">Sign out</button>
+        </div>
+      </header>
+      <nav id="tabs" class="tabs"></nav>
+    </div>
     <div id="grid" class="grid-wrap"></div>
     <p id="empty" class="msg hidden">No habits yet — tap “+ Habit” to add one.</p>
   </section>
