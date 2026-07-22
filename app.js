@@ -61,7 +61,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "27";
+const APP_BUILD = "29";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -69,8 +69,10 @@ const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da"
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [{id, at, note}, ...]
 
-// UI state (sort_mode is synced via user_prefs; the rest are session-local).
+// UI state (sort_mode + dayStartHour are synced via user_prefs; the rest are
+// session-local).
 let sortMode = "manual";   // manual | activity | created | alpha
+let dayStartHour = 0;      // 0-11; when a new "day" begins for calendar-day counts
 let searchTerm = "";
 let showHidden = false;
 let reorderMode = false;
@@ -157,10 +159,10 @@ $("reset-form").addEventListener("submit", async (e) => {
   refreshSession();
 });
 
-$("signout").addEventListener("click", async () => {
+async function signOut() {
   await db.auth.signOut();
   showApp(false);
-});
+}
 
 // When the user arrives via a password-reset link, Supabase fires this event.
 db.auth.onAuthStateChange((event) => {
@@ -209,9 +211,10 @@ async function loadAndRender() {
 // Cross-device UI preferences (currently just the sort mode).
 async function loadPrefs() {
   try {
-    const { data } = await db.from("user_prefs").select("sort_mode").maybeSingle();
+    const { data } = await db.from("user_prefs").select("sort_mode, day_start_hour").maybeSingle();
     if (data?.sort_mode) sortMode = data.sort_mode;
-  } catch (_) { /* table may not exist yet — keep the default */ }
+    if (data && data.day_start_hour != null) dayStartHour = data.day_start_hour;
+  } catch (_) { /* table/column may not exist yet — keep the defaults */ }
 }
 
 async function saveSortMode(mode) {
@@ -224,11 +227,33 @@ async function saveSortMode(mode) {
   } catch (err) { console.warn("Couldn't save sort preference:", err.message); }
 }
 
+async function saveDayStartHour(hour) {
+  dayStartHour = hour;
+  try {
+    const { data: u } = await db.auth.getUser();
+    await db.from("user_prefs").upsert(
+      { user_id: u.user.id, day_start_hour: hour, updated_at: new Date().toISOString() },
+      { onConflict: "user_id" });
+  } catch (err) { console.warn("Couldn't save day-start preference:", err.message); }
+}
+
+// Calendar-day number for a timestamp (ms), honoring the user's day-start hour.
+// A "day" runs from dayStartHour:00 to the next day's dayStartHour:00 in local
+// time, so with dayStartHour=4 a 1am log falls in the previous day's bucket.
+// "Days since" and all gap math are differences of these integers, so they no
+// longer drift with the time of day you logged. MUST mirror dayIndex() in the
+// Edge Function. Bump APP_BUILD (and sw.js CACHE) when this logic changes.
+function dayIndex(ts) {
+  const shifted = ts - dayStartHour * 3600000;
+  const local = shifted - new Date(shifted).getTimezoneOffset() * 60000; // to local wall-clock
+  return Math.floor(local / DAY);
+}
+
 function stats(habitId) {
   const list = entriesByHabit[habitId] || [];
   if (!list.length) return { count: 0, daysSince: null };
   const last = Math.max(...list.map((e) => e.at.getTime()));
-  return { count: list.length, daysSince: Math.floor((Date.now() - last) / DAY) };
+  return { count: list.length, daysSince: dayIndex(Date.now()) - dayIndex(last) };
 }
 
 // Average of a habit's most recent log gaps (in days). learning=true when there
@@ -236,9 +261,9 @@ function stats(habitId) {
 function predictInterval(habitId) {
   const list = (entriesByHabit[habitId] || []).map((e) => e.at.getTime());
   if (list.length < PRED_MIN_GAPS + 1) return { avg: null, learning: true };
-  const sorted = list.slice().sort((a, b) => a - b);
+  const days = list.map(dayIndex).sort((a, b) => a - b); // calendar-day numbers
   const gaps = [];
-  for (let i = 1; i < sorted.length; i++) gaps.push((sorted[i] - sorted[i - 1]) / DAY);
+  for (let i = 1; i < days.length; i++) gaps.push(days[i] - days[i - 1]);
   const recent = gaps.slice(-PRED_WINDOW);
   return { avg: recent.reduce((s, g) => s + g, 0) / recent.length, learning: false };
 }
@@ -278,14 +303,14 @@ function trendSvg(gaps, color) {
 
 // Full "Trend" card for the habit screen. Needs >=3 logs (2 gaps) to draw a line.
 function buildTrend(h) {
-  const list = (entriesByHabit[h.id] || []).map((e) => e.at.getTime()).sort((a, b) => a - b);
+  const list = (entriesByHabit[h.id] || []).map((e) => dayIndex(e.at.getTime())).sort((a, b) => a - b);
   const cfg = trendConfig(h.type);
   let body;
   if (list.length < 3) {
     body = '<p class="msg" style="margin:0">Log a few more times to see your trend.</p>';
   } else {
     const allGaps = [];
-    for (let i = 1; i < list.length; i++) allGaps.push((list[i] - list[i - 1]) / DAY);
+    for (let i = 1; i < list.length; i++) allGaps.push(list[i] - list[i - 1]);
     const gaps = allGaps.slice(-20); // recent window, matches the prediction idea
     const avg = allGaps.reduce((s, g) => s + g, 0) / allGaps.length;
     const longest = Math.max(...allGaps);
@@ -1226,6 +1251,9 @@ function renderSettingsScreen() {
   if (!panel) return;
   const habitCount = habits.length;
   const logCount = Object.values(entriesByHabit).reduce((s, l) => s + l.length, 0);
+  const hourLabel = (h) => h === 0 ? "12:00 AM (midnight)" : `${h}:00 AM`;
+  const dayStartOptions = Array.from({ length: 12 }, (_, h) =>
+    `<option value="${h}"${h === dayStartHour ? " selected" : ""}>${hourLabel(h)}</option>`).join("");
   panel.innerHTML = `
     <header class="screen-head">
       <button class="back" data-act="back">‹ Back</button>
@@ -1234,14 +1262,32 @@ function renderSettingsScreen() {
     </header>
     <div class="screen-body">
       <section class="card-section">
+        <h3>Day start</h3>
+        <p class="hint" style="margin:0">When a new day begins for counting. Pick a later hour if you often log after midnight and want it to count toward the day before.</p>
+        <label class="row">A new day starts at
+          <select data-act="daystart" style="flex:1">${dayStartOptions}</select>
+        </label>
+      </section>
+      <section class="card-section">
         <h3>Your data</h3>
         <p class="hint" style="margin:0">${habitCount} habit${habitCount === 1 ? "" : "s"} · ${logCount} log${logCount === 1 ? "" : "s"}. Export a copy anytime — it's yours.</p>
         <button class="wide" data-act="json">⬇︎ Export JSON (full backup)</button>
         <button class="wide secondary" data-act="csv">⬇︎ Export CSV (logs for spreadsheets)</button>
       </section>
+      <section class="card-section">
+        <h3>Account</h3>
+        <button class="wide secondary" data-act="signout">Sign out</button>
+      </section>
       <p class="hint" style="margin-top:0">Build ${APP_BUILD}</p>
     </div>`;
   panel.querySelector('[data-act="back"]').addEventListener("click", closeSettingsScreen);
+  panel.querySelector('[data-act="signout"]').addEventListener("click", () => { closeSettingsScreen(); signOut(); });
+  panel.querySelector('[data-act="daystart"]').addEventListener("change", async (e) => {
+    await saveDayStartHour(parseInt(e.target.value, 10));
+    render();
+    if ($("habit-screen")) renderHabitScreen(); // keep an open habit's trend/nudge in sync
+    showToast("Day start updated");
+  });
   panel.querySelector('[data-act="json"]').addEventListener("click", exportJSON);
   panel.querySelector('[data-act="csv"]').addEventListener("click", exportCSV);
 }

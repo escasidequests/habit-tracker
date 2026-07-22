@@ -45,6 +45,16 @@ function localDate(tz: string, now: Date): string {
   }).format(now);
 }
 
+// Calendar-day number for an instant, in the user's timezone and honoring their
+// day-start hour: a "day" runs from dayStartHour:00 to the next day's
+// dayStartHour:00, so dayStart=4 puts a 1am log in the previous day. Days-since
+// and all gap math are differences of these integers. MUST mirror dayIndex() in
+// app.js.
+function dayIndex(ts: number, tz: string, dayStartHour: number): number {
+  const dateStr = localDate(tz, new Date(ts - dayStartHour * 3_600_000)); // YYYY-MM-DD in tz
+  return Math.floor(Date.parse(dateStr + "T00:00:00Z") / DAY);
+}
+
 Deno.serve(async (req) => {
   if (req.headers.get("x-cron-secret") !== CRON_SECRET) {
     return json({ error: "unauthorized" }, 401);
@@ -59,6 +69,11 @@ Deno.serve(async (req) => {
     .eq("quiet_mode", false); // global mute: skip these users entirely
   if (error) return json({ error: error.message }, 500);
 
+  // Per-user day-start hour (synced UI preference). Missing row → midnight.
+  const { data: prefs } = await db.from("user_prefs").select("user_id, day_start_hour");
+  const dayStartByUser: Record<string, number> = {};
+  for (const p of prefs ?? []) dayStartByUser[p.user_id] = p.day_start_hour ?? 0;
+
   let users = 0, sent = 0;
   for (const s of rows ?? []) {
     const tz = s.timezone || "UTC";
@@ -69,19 +84,19 @@ Deno.serve(async (req) => {
       await db.from("push_settings").update({ last_notified_on: localDate(tz, now) }).eq("user_id", s.user_id);
     }
     users++;
-    const due = await dueHabits(s.user_id, now);
+    const due = await dueHabits(s.user_id, now, tz, dayStartByUser[s.user_id] ?? 0);
     if (due.length) sent += await pushToUser(s.user_id, buildPayload(due));
   }
   return json({ ok: true, users, sent });
 });
 
-// Average of the most recent gaps (in days) between sorted log times.
-// null when there aren't enough gaps yet (still "learning").
-function predictedInterval(times: number[]): number | null {
-  if (times.length < PRED_MIN_GAPS + 1) return null;
-  const sorted = times.slice().sort((a, b) => a - b);
+// Average of the most recent gaps (in calendar days) between sorted log-day
+// numbers. null when there aren't enough gaps yet (still "learning").
+function predictedInterval(dayIdxs: number[]): number | null {
+  if (dayIdxs.length < PRED_MIN_GAPS + 1) return null;
+  const sorted = dayIdxs.slice().sort((a, b) => a - b);
   const gaps: number[] = [];
-  for (let i = 1; i < sorted.length; i++) gaps.push((sorted[i] - sorted[i - 1]) / DAY);
+  for (let i = 1; i < sorted.length; i++) gaps.push(sorted[i] - sorted[i - 1]);
   const recent = gaps.slice(-PRED_WINDOW);
   return recent.reduce((s, g) => s + g, 0) / recent.length;
 }
@@ -113,21 +128,22 @@ function dueStatus(
   return "none";
 }
 
-async function dueHabits(userId: string, now: Date) {
+async function dueHabits(userId: string, now: Date, tz: string, dayStart: number) {
   const [{ data: habits }, { data: entries }] = await Promise.all([
     db.from("habits").select("id, name, emoji, due_mode, recurrence_days, reminder_lead_days")
       .eq("user_id", userId).eq("paused", false).neq("due_mode", "none"),
     db.from("entries").select("habit_id, logged_at").eq("user_id", userId),
   ]);
-  const times: Record<string, number[]> = {};
+  const dayIdxs: Record<string, number[]> = {};
   for (const e of entries ?? []) {
-    (times[e.habit_id] ||= []).push(new Date(e.logged_at).getTime());
+    (dayIdxs[e.habit_id] ||= []).push(dayIndex(new Date(e.logged_at).getTime(), tz, dayStart));
   }
+  const todayIdx = dayIndex(now.getTime(), tz, dayStart);
   const due: Due[] = [];
   for (const h of habits ?? []) {
-    const list = times[h.id] ?? [];
-    const lastAt = list.length ? Math.max(...list) : null;
-    const days = lastAt === null ? null : Math.floor((now.getTime() - lastAt) / DAY);
+    const list = dayIdxs[h.id] ?? [];
+    const lastIdx = list.length ? Math.max(...list) : null;
+    const days = lastIdx === null ? null : todayIdx - lastIdx;
     const avg = h.due_mode === "interval" ? predictedInterval(list) : null;
     const status = dueStatus(h.due_mode, h.recurrence_days, h.reminder_lead_days ?? 0, avg, days);
     if (status !== "none") due.push({ name: h.name, emoji: h.emoji, days, status });
