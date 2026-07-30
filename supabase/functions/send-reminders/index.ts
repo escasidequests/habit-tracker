@@ -114,15 +114,15 @@ function dueStatus(
 ): "none" | "soon" | "overdue" {
   if (dueMode === "recurrence") {
     if (!recurrenceDays) return "none";
-    if (days === null || days > recurrenceDays) return "overdue";
-    if (days > recurrenceDays - lead) return "soon";
+    if (days === null || days >= recurrenceDays) return "overdue"; // due ON the due day, not the day after
+    if (days >= recurrenceDays - lead) return "soon";
     return "none";
   }
   if (dueMode === "interval") {
     if (avg === null || days === null) return "none"; // never-logged or still learning
     const threshold = avg * PRED_GRACE;
-    if (days > threshold) return "overdue";
-    if (days > threshold - lead) return "soon";
+    if (days >= threshold) return "overdue";
+    if (days >= threshold - lead) return "soon";
     return "none";
   }
   return "none";

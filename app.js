@@ -3,50 +3,60 @@
 const cfg = window.HABIT_CONFIG;
 const db = supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
 
+// A habit's "type" sets which tab it lands in and how its trend is scored:
+//   build — doing it more / sooner is the win (shorter gaps are good)
+//   break — going longer without it is the win (longer gaps are good)
+//   track — no direction, just keeping tabs
+//   bonds — staying in touch with people (shorter gaps are good)
 const TYPES = [
-  { key: "good", label: "Good Habits", color: "var(--good)" },
-  { key: "bad", label: "Bad Habits", color: "var(--bad)" },
-  { key: "neutral", label: "Neutral", color: "var(--neutral)" },
-  { key: "people_hangcall", label: "People — Hang/Call", color: "var(--people)" },
-  { key: "people_text", label: "People — Text", color: "var(--people)" },
+  { key: "build", label: "Build", color: "var(--good)" },
+  { key: "break", label: "Break", color: "var(--bad)" },
+  { key: "track", label: "Track", color: "var(--neutral)" },
+  { key: "bonds", label: "Bonds", color: "var(--people)" },
 ];
 
-// Pages you can toggle between. `types: null` on "due" means "overdue only,
-// any type"; otherwise a view shows the listed types, grouped.
+// Legacy → new type values, applied on load so the app keeps working during the
+// window between deploying this build and running the phase7.sql migration.
+const LEGACY_TYPE = { good: "build", bad: "break", neutral: "track", people_hangcall: "bonds", people_text: "bonds" };
+
+// Tabs you can toggle between. `types: null` on "due" means "due, any type".
+// Otherwise a tab filters to the listed types; within a tab, habits are grouped
+// by the user's custom sections (not by type).
 const VIEWS = [
   { key: "due", label: "Due", types: null },
-  { key: "positive", label: "Good & Neutral", types: ["good", "neutral"] },
-  { key: "bad", label: "Bad", types: ["bad"] },
-  { key: "people", label: "People", types: ["people_hangcall", "people_text"] },
+  { key: "build", label: "Build & Track", types: ["build", "track"] },
+  { key: "break", label: "Break", types: ["break"] },
+  { key: "bonds", label: "Bonds", types: ["bonds"] },
 ];
 let currentView = localStorage.getItem("habitView") || "due";
+if (!VIEWS.some((v) => v.key === currentView)) currentView = "due"; // heal a stale saved tab
 
 // Curated starter habits. `days` (when present) pre-fills a reminder threshold;
 // bad/neutral habits omit it since a "days since" nudge doesn't fit them.
 const SUGGESTIONS = [
-  { emoji: "🏋️", name: "Workout", type: "good", days: 2 },
-  { emoji: "🧘", name: "Meditate", type: "good", days: 2 },
-  { emoji: "🦷", name: "Floss", type: "good", days: 1 },
-  { emoji: "📖", name: "Read", type: "good", days: 3 },
-  { emoji: "🚶", name: "Walk", type: "good", days: 2 },
-  { emoji: "✍️", name: "Journal", type: "good", days: 3 },
-  { emoji: "💧", name: "Drink water", type: "good", days: 1 },
-  { emoji: "🚬", name: "Smoke", type: "bad" },
-  { emoji: "🍺", name: "Alcohol", type: "bad" },
-  { emoji: "🍭", name: "Junk food", type: "bad" },
-  { emoji: "📱", name: "Doomscroll", type: "bad" },
-  { emoji: "🛒", name: "Impulse buy", type: "bad" },
-  { emoji: "☕", name: "Coffee", type: "neutral" },
-  { emoji: "🎮", name: "Gaming", type: "neutral" },
-  { emoji: "📺", name: "Watch a show", type: "neutral" },
-  { emoji: "💤", name: "Nap", type: "neutral" },
-  { emoji: "🤙", name: "Call parents", type: "people_hangcall", days: 7 },
-  { emoji: "👵", name: "Call grandparents", type: "people_hangcall", days: 14 },
-  { emoji: "🍽️", name: "Dinner with friends", type: "people_hangcall", days: 14 },
-  { emoji: "🧑‍🤝‍🧑", name: "See friends", type: "people_hangcall", days: 10 },
-  { emoji: "💬", name: "Text a friend", type: "people_text", days: 7 },
-  { emoji: "👋", name: "Reconnect with someone", type: "people_text", days: 30 },
-  { emoji: "📨", name: "Check in with sibling", type: "people_text", days: 14 },
+  { emoji: "🏋️", name: "Workout", type: "build", days: 2 },
+  { emoji: "🧘", name: "Meditate", type: "build", days: 2 },
+  { emoji: "🦷", name: "Floss", type: "build", days: 1 },
+  { emoji: "📖", name: "Read", type: "build", days: 3 },
+  { emoji: "🚶", name: "Walk", type: "build", days: 2 },
+  { emoji: "✍️", name: "Journal", type: "build", days: 3 },
+  { emoji: "💧", name: "Drink water", type: "build", days: 1 },
+  { emoji: "🚬", name: "Smoke", type: "break" },
+  { emoji: "🍺", name: "Alcohol", type: "break" },
+  { emoji: "🍭", name: "Junk food", type: "break" },
+  { emoji: "📱", name: "Doomscroll", type: "break" },
+  { emoji: "🛒", name: "Impulse buy", type: "break" },
+  { emoji: "☕", name: "Coffee", type: "track" },
+  { emoji: "🎮", name: "Gaming", type: "track" },
+  { emoji: "📺", name: "Watch a show", type: "track" },
+  { emoji: "💤", name: "Nap", type: "track" },
+  { emoji: "🤙", name: "Call parents", type: "bonds", days: 7 },
+  { emoji: "👵", name: "Call grandparents", type: "bonds", days: 14 },
+  { emoji: "🍽️", name: "Dinner with friends", type: "bonds", days: 14 },
+  { emoji: "🧑‍🤝‍🧑", name: "See friends", type: "bonds", days: 10 },
+  { emoji: "💬", name: "Text a friend", type: "bonds", days: 7 },
+  { emoji: "👋", name: "Reconnect with someone", type: "bonds", days: 30 },
+  { emoji: "📨", name: "Check in with sibling", type: "bonds", days: 14 },
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -61,13 +71,14 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "29";
+const APP_BUILD = "30";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
 
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [{id, at, note}, ...]
+let sections = [];       // user-defined home-screen groups: [{id, name, sort_order, collapsed}, ...]
 
 // UI state (sort_mode + dayStartHour are synced via user_prefs; the rest are
 // session-local).
@@ -200,10 +211,14 @@ async function loadAndRender() {
   ]);
   if (he || ee) { alert((he || ee).message); return; }
   habits = h || [];
+  habits.forEach((x) => { if (LEGACY_TYPE[x.type]) x.type = LEGACY_TYPE[x.type]; }); // pre-migration safety
   entriesByHabit = {};
   (en || []).forEach((row) => {
     (entriesByHabit[row.habit_id] ||= []).push({ id: row.id, at: new Date(row.logged_at), note: row.note || "" });
   });
+  // Sections may not exist yet (before phase7.sql) — treat a query error as "no sections".
+  const { data: s, error: se } = await db.from("sections").select("*").order("sort_order");
+  sections = se ? [] : (s || []);
   await loadPrefs();
   render();
 }
@@ -272,17 +287,16 @@ function predictInterval(habitId) {
 
 // Hex equivalents of the type CSS vars — SVG stroke can't resolve var(--x).
 const TYPE_HEX = {
-  good: "#37b26b", bad: "#e5533c", neutral: "#7f8b98",
-  people_hangcall: "#4f8cf5", people_text: "#4f8cf5",
+  build: "#37b26b", break: "#e5533c", track: "#7f8b98", bonds: "#4f8cf5",
 };
 function trendColor(h) { return h.color || TYPE_HEX[h.type] || "#7f8b98"; }
 
 // Type-specific framing: what "longer gaps" means differs for a vice vs a habit.
 function trendConfig(type) {
-  if (type === "bad") return { title: "Trend — days between", longestLabel: "Longest clean stretch", caption: "Higher is better — longer gaps mean progress." };
-  if (type === "people_hangcall" || type === "people_text") return { title: "Trend — days between", longestLabel: "Longest gap", caption: "Lower means you're staying in touch." };
-  if (type === "good") return { title: "Trend — days between logs", longestLabel: "Longest gap", caption: "Lower means you're doing it more often." };
-  return { title: "Trend — days between logs", longestLabel: "Longest gap", caption: "" }; // neutral
+  if (type === "break") return { title: "Trend — days between", longestLabel: "Longest clean stretch", caption: "Higher is better — longer gaps mean progress." };
+  if (type === "bonds") return { title: "Trend — days between", longestLabel: "Longest gap", caption: "Lower means you're staying in touch." };
+  if (type === "build") return { title: "Trend — days between logs", longestLabel: "Longest gap", caption: "Lower means you're doing it more often." };
+  return { title: "Trend — days between logs", longestLabel: "Longest gap", caption: "" }; // track
 }
 
 // A responsive SVG line chart of the given gaps (days), scaled to fit.
@@ -331,24 +345,25 @@ function sinceText(daysSince) {
     : `${daysSince} day${daysSince === 1 ? "" : "s"} ago`;
 }
 
-// 'none' | 'soon' | 'overdue'. "soon" = within the habit's lead-time window
-// before its due point; "overdue" = past it. Lead 0 → soon never fires (matches
-// the old overdue-only behavior). MUST mirror dueStatus() in the Edge Function.
+// 'none' | 'soon' | 'overdue'. The DUE marker ("overdue" here) fires ON the due
+// day itself — i.e. once days-since REACHES the interval, not the day after.
+// "soon" = within the habit's lead-time window before that. Lead 0 → soon never
+// fires. MUST mirror dueStatus() in the Edge Function.
 function dueStatus(h, daysSince) {
   if (h.paused) return "none";
   const lead = h.reminder_lead_days || 0;
   if (h.due_mode === "recurrence") {
     if (!h.recurrence_days) return "none";
-    if (daysSince === null || daysSince > h.recurrence_days) return "overdue";
-    if (daysSince > h.recurrence_days - lead) return "soon";
+    if (daysSince === null || daysSince >= h.recurrence_days) return "overdue";
+    if (daysSince >= h.recurrence_days - lead) return "soon";
     return "none";
   }
   if (h.due_mode === "interval") {
     const { avg, learning } = predictInterval(h.id);
     if (learning || daysSince === null) return "none"; // still learning / no data
     const threshold = avg * PRED_GRACE;
-    if (daysSince > threshold) return "overdue";
-    if (daysSince > threshold - lead) return "soon";
+    if (daysSince >= threshold) return "overdue";
+    if (daysSince >= threshold - lead) return "soon";
     return "none";
   }
   return "none"; // 'none' — just tracking
@@ -397,8 +412,8 @@ function sortForGroup(list) {
 /* ---------- Render ---------- */
 
 function render() {
-  // Reorder only makes sense in manual order on a grouped (non-Due) view.
-  if (reorderMode && (currentView === "due" || sortMode !== "manual")) reorderMode = false;
+  // Reorder only makes sense on a grouped (non-Due) view.
+  if (reorderMode && currentView === "due") reorderMode = false;
 
   renderTabs();
   renderControls();
@@ -412,7 +427,9 @@ function render() {
   const q = searchTerm.trim().toLowerCase();
   const matches = (h) => !q || h.name.toLowerCase().includes(q);
 
-  if (reorderMode) grid.appendChild(hintEl("Drag tiles to reorder — tap Done when finished."));
+  if (reorderMode) {
+    grid.appendChild(hintEl("Drag ⠿ to reorder sections · drag tiles to reorder · tap a section name to rename or delete · Done when finished. (Add a habit to a section from its screen.)"));
+  }
 
   if (view.key === "due") {
     const inView = habits.filter((h) => matches(h));
@@ -426,12 +443,25 @@ function render() {
     return;
   }
 
+  // Grouped view: filter to this tab's types, then group by the user's sections.
+  const inView = habits.filter((h) => view.types.includes(h.type) && matches(h) && (showHidden || !h.hidden));
+  const bySection = {};
+  for (const h of inView) (bySection[h.section_id || "__none__"] ||= []).push(h);
+
   let any = false;
-  for (const t of TYPES) {
-    if (!view.types.includes(t.key)) continue;
-    const inType = habits.filter((h) => h.type === t.key && matches(h) && (showHidden || !h.hidden));
-    if (inType.length) { renderGroup(grid, t.label, sortForGroup(inType)); any = true; }
+  const ordered = sections.slice().sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name));
+  for (const s of ordered) {
+    const list = bySection[s.id];
+    if (list && list.length) { renderSectionGroup(grid, s, sortForGroup(list)); any = true; }
   }
+  const ungrouped = bySection["__none__"];
+  if (ungrouped && ungrouped.length) {
+    // Only label leftovers "Ungrouped" when there are real sections to contrast with;
+    // otherwise (no sections yet) just show a plain, header-less list.
+    renderSectionGroup(grid, any ? { id: null, name: "Ungrouped" } : null, sortForGroup(ungrouped));
+    any = true;
+  }
+
   const hiddenInView = habits.filter((h) => view.types.includes(h.type) && matches(h) && h.hidden).length;
   if (!any && !hiddenInView) grid.appendChild(msgEl(q ? "No matching habits." : "No habits here yet — add one with “+ Habit”."));
   if (hiddenInView) {
@@ -454,7 +484,7 @@ function renderControls() {
   sortSel.classList.toggle("hidden", onDue);
   sortSel.value = sortMode;
   const reorderBtn = $("reorder");
-  reorderBtn.classList.toggle("hidden", onDue || sortMode !== "manual");
+  reorderBtn.classList.toggle("hidden", onDue); // sections are reorderable in any sort mode
   reorderBtn.classList.toggle("active", reorderMode);
   reorderBtn.textContent = reorderMode ? "Done" : "Reorder";
 }
@@ -487,6 +517,188 @@ function renderGroup(grid, label, list) {
   grid.appendChild(group);
 }
 
+// A home-screen section group. `section` is a real row {id, name, collapsed} — or
+// {id: null, name: "Ungrouped"} for the leftovers, or null for a header-less list
+// (when no sections exist yet). Real sections collapse (tap header) and, in reorder
+// mode, drag to reorder (⠿ handle) and rename/delete (tap the name).
+function renderSectionGroup(grid, section, list) {
+  const group = document.createElement("div");
+  group.className = "group";
+  const isReal = !!(section && section.id); // a persisted section (not Ungrouped/flat)
+  const collapsed = isReal && !!section.collapsed;
+  if (isReal) { group.classList.add("section-group"); group.dataset.sectionId = section.id; }
+  if (collapsed) group.classList.add("collapsed");
+
+  if (section) {
+    const head = document.createElement("div");
+    head.className = "section-head";
+    head.innerHTML =
+      (isReal ? `<span class="section-toggle">${collapsed ? "▶" : "▼"}</span>` : "") +
+      `<h2>${escapeHtml(section.name)}</h2>` +
+      `<span class="section-count">${list.length}</span>` +
+      (reorderMode && isReal ? `<span class="section-drag" title="Drag to reorder">⠿</span>` : "");
+    group.appendChild(head);
+    if (reorderMode && isReal) {
+      head.querySelector(".section-toggle").style.visibility = "hidden"; // no collapsing mid-reorder
+      const name = head.querySelector("h2");
+      name.style.cursor = "pointer";
+      name.addEventListener("click", () => openSectionMenu(section));
+      attachSectionReorder(head, group);
+    } else if (isReal) {
+      head.style.cursor = "pointer";
+      head.addEventListener("click", () => toggleSectionCollapse(section));
+    }
+  }
+
+  const tiles = document.createElement("div");
+  tiles.className = "tiles";
+  if (!collapsed) list.forEach((h) => tiles.appendChild(buildTile(h)));
+  group.appendChild(tiles);
+  grid.appendChild(group);
+}
+
+async function toggleSectionCollapse(section) {
+  section.collapsed = !section.collapsed;
+  render(); // optimistic; persist in the background
+  const { error } = await db.from("sections").update({ collapsed: section.collapsed }).eq("id", section.id);
+  if (error) console.warn("Couldn't save collapse state:", error.message);
+}
+
+// Drag a section header to reorder sections within the current tab, then persist.
+let dragSection = null;
+function attachSectionReorder(head, group) {
+  head.addEventListener("pointerdown", (e) => {
+    if (e.button && e.button !== 0) return;
+    if (e.target.closest("h2")) return; // tapping the name renames; don't start a drag
+    dragSection = group;
+    group.classList.add("dragging");
+    head.setPointerCapture(e.pointerId);
+    const move = (ev) => {
+      const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".section-group[data-section-id]");
+      if (!over || over === dragSection || over.parentElement !== dragSection.parentElement) return;
+      const r = over.getBoundingClientRect();
+      const after = (ev.clientY - r.top) > r.height / 2;
+      over.parentElement.insertBefore(dragSection, after ? over.nextSibling : over);
+    };
+    const up = (ev) => {
+      head.releasePointerCapture(ev.pointerId);
+      group.classList.remove("dragging");
+      head.removeEventListener("pointermove", move);
+      head.removeEventListener("pointerup", up);
+      head.removeEventListener("pointercancel", up);
+      dragSection = null;
+      persistSectionOrder();
+    };
+    head.addEventListener("pointermove", move);
+    head.addEventListener("pointerup", up);
+    head.addEventListener("pointercancel", up);
+  });
+}
+
+// Renumber sort_order to match the sections' current top-to-bottom order on screen.
+async function persistSectionOrder() {
+  const ids = Array.from(document.querySelectorAll("#grid .section-group[data-section-id]")).map((g) => g.dataset.sectionId);
+  for (let i = 0; i < ids.length; i++) {
+    const s = sections.find((x) => x.id === ids[i]);
+    if (s && s.sort_order !== i) {
+      s.sort_order = i;
+      const { error } = await db.from("sections").update({ sort_order: i }).eq("id", s.id);
+      if (error) { alert(error.message); return; }
+    }
+  }
+}
+
+// Rename / delete popover for a section (opened by tapping its name in reorder mode).
+function openSectionMenu(section) {
+  closeTileMenu();
+  const overlay = document.createElement("div");
+  overlay.id = "tile-menu";
+  overlay.className = "popover show";
+  overlay.innerHTML = `
+    <div class="popover-card">
+      <div class="popover-title">${escapeHtml(section.name)}</div>
+      <button data-act="rename" class="secondary">✎ Rename</button>
+      <button data-act="delete" class="wide danger">Delete section</button>
+      <button data-act="cancel" class="ghost">Cancel</button>
+    </div>`;
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  overlay.querySelector('[data-act="rename"]').addEventListener("click", () => {
+    overlay.remove();
+    const name = (prompt("Rename section:", section.name) || "").trim();
+    if (name) renameSection(section, name);
+  });
+  overlay.querySelector('[data-act="delete"]').addEventListener("click", () => {
+    overlay.remove();
+    if (confirm(`Delete section “${section.name}”? Its habits stay — they just become Ungrouped.`)) deleteSection(section);
+  });
+  overlay.querySelector('[data-act="cancel"]').addEventListener("click", () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+
+async function renameSection(section, name) {
+  const { error } = await db.from("sections").update({ name }).eq("id", section.id);
+  if (error) return alert(error.message);
+  section.name = name;
+  render();
+}
+
+async function deleteSection(section) {
+  const { error } = await db.from("sections").delete().eq("id", section.id);
+  if (error) return alert(error.message);
+  sections = sections.filter((s) => s.id !== section.id);
+  habits.forEach((h) => { if (h.section_id === section.id) h.section_id = null; }); // mirror ON DELETE SET NULL
+  render();
+}
+
+// Insert a new section, append it locally, return the row (or null on error).
+async function createSection(name) {
+  const { data: u } = await db.auth.getUser();
+  const { data, error } = await db.from("sections").insert({
+    user_id: u.user.id, name, sort_order: sections.length,
+  }).select().single();
+  if (error) { alert(error.message); return null; }
+  sections.push(data);
+  return data;
+}
+
+// A <select> of sections for the add/edit forms. `prefix` namespaces the id
+// ('h' add form, 'hs' habit screen). Includes "Ungrouped" and a "＋ New section" option.
+function sectionSelectHtml(prefix, selectedId) {
+  const opts = sections.slice().sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name))
+    .map((s) => `<option value="${s.id}"${s.id === selectedId ? " selected" : ""}>${escapeHtml(s.name)}</option>`).join("");
+  return `<label>Section
+    <select id="${prefix}-section">
+      <option value=""${!selectedId ? " selected" : ""}>Ungrouped</option>
+      ${opts}
+      <option value="__new__">＋ New section…</option>
+    </select>
+  </label>`;
+}
+
+function wireSectionSelect(prefix) {
+  const sel = $(`${prefix}-section`);
+  if (!sel) return;
+  let prev = sel.value;
+  sel.addEventListener("change", async () => {
+    if (sel.value !== "__new__") { prev = sel.value; return; }
+    const name = (prompt("New section name:") || "").trim();
+    if (!name) { sel.value = prev; return; }
+    const s = await createSection(name);
+    if (!s) { sel.value = prev; return; }
+    const opt = document.createElement("option");
+    opt.value = s.id; opt.textContent = s.name;
+    sel.insertBefore(opt, sel.querySelector('option[value="__new__"]'));
+    sel.value = s.id;
+    prev = sel.value;
+  });
+}
+
+function readSectionSelect(prefix) {
+  const sel = $(`${prefix}-section`);
+  const v = sel ? sel.value : "";
+  return v && v !== "__new__" ? v : null;
+}
+
 function buildTile(h) {
   const { count, daysSince } = stats(h.id);
   const status = dueStatus(h, daysSince);
@@ -503,8 +715,10 @@ function buildTile(h) {
     <div class="name">${escapeHtml(h.name)}</div>
     <div class="stat">${sinceText(daysSince)}</div>
     <div class="count">${count}×</div>`;
-  if (reorderMode) attachReorderGestures(tile);
-  else attachTileGestures(tile, h);
+  // In reorder mode, tiles are only drag-sortable under manual sort (otherwise the
+  // visible order is computed, so dragging couldn't stick). Sections still reorder.
+  if (reorderMode && sortMode === "manual") attachReorderGestures(tile);
+  else if (!reorderMode) attachTileGestures(tile, h);
   return tile;
 }
 
@@ -552,7 +766,8 @@ async function persistOrder() {
   }
 }
 
-// Tap = log instantly. Press-and-hold (or right-click) = options popup.
+// Tap = open the date/time sheet (defaults to now). Press-and-hold (or
+// right-click) = options popup.
 function attachTileGestures(tile, h) {
   let timer = null, longPressed = false, sx = 0, sy = 0;
   const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
@@ -572,7 +787,7 @@ function attachTileGestures(tile, h) {
 
   tile.addEventListener("click", () => {
     if (longPressed) { longPressed = false; return; } // hold already handled it
-    logNow(h.id, tile);
+    openLogSheet(h, tile);
   });
   tile.addEventListener("contextmenu", (e) => { e.preventDefault(); openTileMenu(h, tile); });
 }
@@ -587,16 +802,14 @@ function openTileMenu(h, tile) {
   overlay.innerHTML = `
     <div class="popover-card">
       <div class="popover-title">${h.emoji} ${escapeHtml(h.name)}</div>
-      <button data-act="log">Log a new entry now</button>
       <button data-act="pin" class="secondary">${h.pinned ? "📌 Unpin" : "📌 Pin to top"}</button>
-      <button data-act="pause" class="secondary">${h.paused ? "▶️ Resume" : "⏸ Pause"}</button>
+      <button data-act="pausehide" class="secondary">${(h.paused && h.hidden) ? "▶️ Resume & show" : "⏸ Pause & hide"}</button>
       <button data-act="open" class="secondary">Open habit screen</button>
       <button data-act="cancel" class="ghost">Cancel</button>
     </div>`;
   overlay.addEventListener("click", (e) => { if (e.target === overlay) closeTileMenu(); });
-  overlay.querySelector('[data-act="log"]').addEventListener("click", () => { closeTileMenu(); logNow(h.id, tile); });
   overlay.querySelector('[data-act="pin"]').addEventListener("click", () => { closeTileMenu(); togglePin(h); });
-  overlay.querySelector('[data-act="pause"]').addEventListener("click", () => { closeTileMenu(); togglePause(h); });
+  overlay.querySelector('[data-act="pausehide"]').addEventListener("click", () => { closeTileMenu(); togglePauseHide(h); });
   overlay.querySelector('[data-act="open"]').addEventListener("click", () => { closeTileMenu(); openHabitScreen(h.id); });
   overlay.querySelector('[data-act="cancel"]').addEventListener("click", closeTileMenu);
   document.body.appendChild(overlay);
@@ -728,6 +941,7 @@ function renderHabitScreen() {
           </select>
         </label>
         <label>Color <div id="hs-color" class="swatches"></div></label>
+        ${sectionSelectHtml("hs", h.section_id || "")}
         ${dueControlHtml("hs", h.due_mode, h.recurrence_days, h.reminder_lead_days)}
         <label class="row"><input id="hs-pinned" type="checkbox"${h.pinned ? " checked" : ""} /> Pin to top</label>
         <label class="row"><input id="hs-paused" type="checkbox"${h.paused ? " checked" : ""} /> Paused (no reminders)</label>
@@ -741,6 +955,8 @@ function renderHabitScreen() {
 
   const getColor = renderSwatches(panel.querySelector("#hs-color"), h.color, null);
   wireDueControl("hs");
+  wireSectionSelect("hs");
+  wireEmojiInput(panel.querySelector("#hs-emoji"));
   panel.querySelectorAll("[data-note]").forEach((b) =>
     b.addEventListener("click", (e) => { e.stopPropagation(); openNoteEditor(h.id, b.dataset.note); }));
 
@@ -786,6 +1002,7 @@ function renderHabitScreen() {
       emoji: $("hs-emoji").value.trim() || "✅",
       type: $("hs-type").value,
       color: getColor(),
+      section_id: readSectionSelect("hs"),
       due_mode: due.due_mode,
       recurrence_days: due.recurrence_days,
       reminder_lead_days: due.reminder_lead_days,
@@ -977,12 +1194,15 @@ async function togglePin(h) {
   showToast(v ? `Pinned ${h.emoji} ${h.name}` : "Unpinned");
 }
 
-async function togglePause(h) {
-  const v = !h.paused;
-  const { error } = await db.from("habits").update({ paused: v }).eq("id", h.id);
+// Mini-menu shortcut: pause AND hide together. If both are already on, it turns
+// both off (resume & show). The habit screen still exposes the two as separate
+// checkboxes, so either can be toggled on its own there.
+async function togglePauseHide(h) {
+  const on = !(h.paused && h.hidden);
+  const { error } = await db.from("habits").update({ paused: on, hidden: on }).eq("id", h.id);
   if (error) return alert(error.message);
-  h.paused = v; render();
-  showToast(v ? `Paused ${h.emoji} ${h.name}` : `Resumed ${h.emoji} ${h.name}`);
+  h.paused = on; h.hidden = on; render();
+  showToast(on ? `Paused & hid ${h.emoji} ${h.name}` : `Resumed & showed ${h.emoji} ${h.name}`);
 }
 
 // Edit or clear a single entry's note (opened from the habit screen's history).
@@ -1022,15 +1242,52 @@ function escapeHtml(s) {
 
 /* ---------- Actions ---------- */
 
-async function logNow(habitId, tile) {
+// A Date → the value string a datetime-local input expects (local wall-clock).
+function toLocalInputValue(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// Tapping a habit opens this sheet: adjust the date/time (defaults to now), then
+// confirm to log. Same picker the habit screen uses for backdating.
+function openLogSheet(h, tile) {
+  const overlay = document.createElement("div");
+  overlay.id = "log-sheet";
+  overlay.className = "popover show";
+  overlay.innerHTML = `
+    <div class="popover-card">
+      <div class="popover-title">${h.emoji} ${escapeHtml(h.name)}</div>
+      <label>When?
+        <input type="datetime-local" id="log-when" value="${toLocalInputValue(new Date())}" />
+      </label>
+      <button data-act="confirm">Log it</button>
+      <button data-act="cancel" class="ghost">Cancel</button>
+    </div>`;
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
+  overlay.querySelector('[data-act="confirm"]').addEventListener("click", () => {
+    const v = $("log-when").value;
+    if (!v) return;
+    const when = new Date(v);
+    if (isNaN(when)) return alert("Couldn't read that date.");
+    close();
+    logEntry(h.id, when, tile);
+  });
+  document.body.appendChild(overlay);
+}
+
+// Insert an entry at `when` with the full tap feedback: pop, toast + undo, and a
+// Due-tab refresh so a now-satisfied habit drops off.
+async function logEntry(habitId, when, tile) {
   buzz();
   popTile(tile);
-  const row = await insertEntry(habitId, new Date());
+  const row = await insertEntry(habitId, when);
   if (!row) return;
   updateTile(habitId);
   const h = habits.find((x) => x.id === habitId);
   showToast(`Logged ${h.emoji} ${h.name}`, () => undoLog(habitId, row.id));
-  // On the Due page a logged habit is no longer due — let the pop play, then re-render so it drops off.
+  // On the Due tab a logged habit is no longer due — let the pop play, then re-render so it drops off.
   if (currentView === "due") setTimeout(() => { if (currentView === "due") render(); }, 850);
 }
 
@@ -1117,6 +1374,54 @@ function hideToast() {
   setTimeout(() => toast.classList.add("hidden"), 200);
 }
 
+/* ---------- Emoji picker ---------- */
+
+// Web apps can't force the OS emoji keyboard open (iOS Safari ignores every hint),
+// so we bring our own: tapping an emoji field opens this curated grid. The "type
+// your own" box inside covers anything not listed.
+const EMOJI_PICKER = {
+  "Activity": ["🏋️", "🧘", "🚶", "🏃", "🚴", "🏊", "🧗", "🤸", "🥊", "⚽", "🏀", "🎾", "🎯", "🎮", "🎨", "🎸", "🎹", "📖", "✍️", "🧠", "💻", "🧹", "🛁", "🦷", "💊", "💤"],
+  "Food & drink": ["💧", "☕", "🍵", "🍺", "🍷", "🥂", "🍸", "🥤", "🧋", "🍭", "🍫", "🍔", "🍕", "🍟", "🌮", "🍜", "🥗", "🍎", "🥦", "🥕", "🚬"],
+  "People": ["🤙", "📞", "💬", "📨", "👋", "🧑‍🤝‍🧑", "👵", "👴", "❤️", "🎉", "🍽️", "🎂", "💌", "🤝", "💍"],
+  "Life": ["💰", "💵", "🛒", "📱", "📵", "⏰", "📅", "🌱", "✅", "⭐", "🔥", "🏆", "🎁", "🐶", "🐱", "🌞", "🌙", "🚗", "✈️", "🧾", "🎧", "📷"],
+};
+
+// Turn an emoji <input> into a picker trigger: read-only (so the text keyboard
+// doesn't open) and clicking it opens the grid. Guarded so it wires only once.
+function wireEmojiInput(input) {
+  if (!input || input.dataset.emojiWired) return;
+  input.dataset.emojiWired = "1";
+  input.readOnly = true;
+  input.classList.add("emoji-input");
+  input.addEventListener("click", () => openEmojiPicker(input));
+}
+
+function openEmojiPicker(input) {
+  const overlay = document.createElement("div");
+  overlay.id = "emoji-picker";
+  overlay.className = "popover show";
+  const cats = Object.entries(EMOJI_PICKER).map(([name, list]) =>
+    `<div class="emoji-cat">${escapeHtml(name)}</div>
+     <div class="emoji-grid">${list.map((e) => `<button type="button" class="emoji-opt">${e}</button>`).join("")}</div>`).join("");
+  overlay.innerHTML = `
+    <div class="popover-card emoji-card">
+      <div class="popover-title">Pick an emoji</div>
+      <div class="emoji-scroll">${cats}</div>
+      <label>Or type your own
+        <input type="text" id="emoji-custom-in" maxlength="8" value="${escapeAttr(input.value)}" />
+      </label>
+      <button data-act="done" class="secondary">Done</button>
+    </div>`;
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelectorAll(".emoji-opt").forEach((b) =>
+    b.addEventListener("click", () => { input.value = b.textContent; close(); }));
+  const custom = overlay.querySelector("#emoji-custom-in");
+  custom.addEventListener("input", () => { const v = custom.value.trim(); if (v) input.value = v; });
+  overlay.querySelector('[data-act="done"]').addEventListener("click", close);
+  document.body.appendChild(overlay);
+}
+
 /* ---------- Add habit modal ---------- */
 
 $("add-habit").addEventListener("click", openAddHabit);
@@ -1126,6 +1431,9 @@ $("h-cancel").addEventListener("click", () => { $("modal").classList.add("hidden
 function openAddHabit() {
   $("habit-form").reset();
   $("h-emoji").value = "✅";
+  wireEmojiInput($("h-emoji"));
+  $("h-section-wrap").innerHTML = sectionSelectHtml("h", "");
+  wireSectionSelect("h");
   $("h-due-control").innerHTML = dueControlHtml("h", "none", 7, 0);
   wireDueControl("h");
   newHabitColor = null;
@@ -1212,6 +1520,7 @@ $("habit-form").addEventListener("submit", async (e) => {
     type: $("h-type").value,
     emoji: $("h-emoji").value.trim() || "✅",
     color: newHabitColor,
+    section_id: readSectionSelect("h"),
     due_mode: due.due_mode,
     recurrence_days: due.recurrence_days,
     reminder_lead_days: due.reminder_lead_days,
@@ -1539,7 +1848,9 @@ function urlB64ToUint8Array(base64) {
 // Escape closes the popup first, then the habit screen.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if ($("note-editor")) $("note-editor").remove();
+  if ($("emoji-picker")) $("emoji-picker").remove();
+  else if ($("log-sheet")) $("log-sheet").remove();
+  else if ($("note-editor")) $("note-editor").remove();
   else if ($("tile-menu")) closeTileMenu();
   else if ($("settings-screen")) closeSettingsScreen();
   else if ($("notif-screen")) closeNotifScreen();

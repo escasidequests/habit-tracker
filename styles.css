@@ -362,6 +362,32 @@ button:disabled { opacity: .5; cursor: default; }
 }
 .note-editor .row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
 
+/* Section groups (home screen) */
+.section-head { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; }
+.section-head h2 { margin: 0; flex: 1; }
+.section-toggle { color: var(--muted); font-size: 11px; width: 12px; flex: none; }
+.section-count {
+  background: var(--card-2); color: var(--muted); border-radius: 999px;
+  font-size: 11px; font-weight: 700; padding: 1px 8px; flex: none;
+}
+.section-drag { color: var(--muted); font-size: 18px; cursor: grab; padding: 0 4px; flex: none; touch-action: none; }
+.section-group.dragging { opacity: .6; }
+
+/* Popover forms (log sheet, emoji "type your own") */
+.popover-card label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.popover-card input {
+  background: var(--card-2); border: 1px solid #313a46; color: var(--text);
+  padding: 10px; border-radius: 10px; font-size: 16px;
+}
+#log-sheet, #emoji-picker { z-index: 55; } /* above the habit screen (z 40) */
+.emoji-input { cursor: pointer; }
+
+/* Emoji picker */
+.emoji-scroll { max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.emoji-cat { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: 6px; }
+.emoji-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 4px; }
+.emoji-opt { background: var(--card-2); border: 0; font-size: 22px; padding: 6px 0; border-radius: 8px; width: auto; }
+
 /* First-run welcome */
 .empty-welcome {
   max-width: 340px; margin: 48px auto; padding: 0 24px; text-align: center;
