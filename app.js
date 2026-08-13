@@ -83,7 +83,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "33";
+const APP_BUILD = "34";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -1005,9 +1005,13 @@ function buildTile(h) {
   const icon = (h.type === "buys" && h.photo_path)
     ? `<img class="tile-thumb" data-photo="${h.id}" alt="" />`
     : h.emoji;
+  // A "⋯" affordance hints at the options menu (long-press isn't discoverable). Only
+  // shown on normal tiles (no due-badge to clash with) outside reorder mode.
+  const showMore = !reorderMode && status === "none";
   tile.innerHTML = `
     <span class="due-badge">${status === "soon" ? "SOON" : "DUE"}</span>
     ${flags ? `<span class="tile-flags">${flags}</span>` : ""}
+    ${showMore ? `<button class="tile-more" aria-label="Options">⋯</button>` : ""}
     <div class="emoji">${icon}</div>
     <div class="name">${escapeHtml(h.name)}</div>
     <div class="stat">${sinceText(daysSince)}</div>
@@ -1018,7 +1022,15 @@ function buildTile(h) {
   // In reorder mode, tiles are only drag-sortable under manual sort (otherwise the
   // visible order is computed, so dragging couldn't stick). Sections still reorder.
   if (reorderMode && sortMode === "manual") attachReorderGestures(tile);
-  else if (!reorderMode) attachTileGestures(tile, h);
+  else if (!reorderMode) {
+    attachTileGestures(tile, h);
+    const more = tile.querySelector(".tile-more");
+    if (more) {
+      // Stop the tap/long-press gestures on the tile from firing when using "⋯".
+      more.addEventListener("pointerdown", (e) => e.stopPropagation());
+      more.addEventListener("click", (e) => { e.stopPropagation(); openTileMenu(h, tile); });
+    }
+  }
   return tile;
 }
 
@@ -1104,13 +1116,15 @@ function openTileMenu(h, tile) {
       <div class="popover-title">${h.emoji} ${escapeHtml(h.name)}</div>
       <button data-act="pin" class="secondary">${h.pinned ? "📌 Unpin" : "📌 Pin to top"}</button>
       <button data-act="pausehide" class="secondary">${(h.paused && h.hidden) ? "▶️ Resume & show" : "⏸ Pause & hide"}</button>
-      <button data-act="open" class="secondary">Open habit screen</button>
+      <button data-act="category" class="secondary">🗂 Move to section…</button>
+      <button data-act="delete" class="secondary danger">🗑 Delete</button>
       <button data-act="cancel" class="ghost">Cancel</button>
     </div>`;
   overlay.addEventListener("click", (e) => { if (e.target === overlay) closeTileMenu(); });
   overlay.querySelector('[data-act="pin"]').addEventListener("click", () => { closeTileMenu(); togglePin(h); });
   overlay.querySelector('[data-act="pausehide"]').addEventListener("click", () => { closeTileMenu(); togglePauseHide(h); });
-  overlay.querySelector('[data-act="open"]').addEventListener("click", () => { closeTileMenu(); openHabitScreen(h.id); });
+  overlay.querySelector('[data-act="category"]').addEventListener("click", () => { closeTileMenu(); openSectionPicker(h); });
+  overlay.querySelector('[data-act="delete"]').addEventListener("click", () => { closeTileMenu(); deleteHabit(h); });
   overlay.querySelector('[data-act="cancel"]').addEventListener("click", closeTileMenu);
   document.body.appendChild(overlay);
   requestAnimationFrame(() => overlay.classList.add("show"));
@@ -1119,6 +1133,82 @@ function openTileMenu(h, tile) {
 function closeTileMenu() {
   const m = $("tile-menu");
   if (m) m.remove();
+}
+
+// Quick "move to section" picker (from the long-press menu). Lists Ungrouped + every
+// section + a "New section…" option; sets the habit's section_id.
+function openSectionPicker(h) {
+  const overlay = document.createElement("div");
+  overlay.id = "section-picker";
+  overlay.className = "popover show";
+  const ordered = sections.slice().sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name));
+  const current = h.section_id || "";
+  const row = (id, label) =>
+    `<button data-sec="${id}" class="secondary${id === current ? " active" : ""}">${escapeHtml(label)}</button>`;
+  overlay.innerHTML = `
+    <div class="popover-card">
+      <div class="popover-title">Move “${escapeHtml(h.name)}” to…</div>
+      ${row("", "Ungrouped")}
+      ${ordered.map((s) => row(s.id, s.name)).join("")}
+      <button data-sec="__new__" class="secondary">＋ New section…</button>
+      <button data-act="cancel" class="ghost">Cancel</button>
+    </div>`;
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
+  overlay.querySelectorAll("[data-sec]").forEach((b) => b.addEventListener("click", async () => {
+    let sectionId = b.dataset.sec;
+    if (sectionId === "__new__") {
+      const name = (prompt("New section name:") || "").trim();
+      if (!name) return;
+      const s = await createSection(name);
+      if (!s) return;
+      sectionId = s.id;
+    }
+    close();
+    await setHabitSection(h, sectionId || null);
+  }));
+  document.body.appendChild(overlay);
+}
+
+async function setHabitSection(h, sectionId) {
+  const { error } = await db.from("habits").update({ section_id: sectionId }).eq("id", h.id);
+  if (error) return alert(error.message);
+  h.section_id = sectionId;
+  render();
+  showToast(sectionId ? `Moved ${h.emoji} ${h.name}` : `Moved ${h.emoji} ${h.name} to Ungrouped`);
+}
+
+// Three-way "unsaved changes" dialog for leaving the habit screen mid-edit.
+function confirmUnsaved(onSave, onDiscard) {
+  const overlay = document.createElement("div");
+  overlay.id = "confirm-unsaved";
+  overlay.className = "popover show";
+  overlay.innerHTML = `
+    <div class="popover-card">
+      <div class="popover-title">Unsaved changes</div>
+      <p class="msg" style="margin:0">You've made changes that aren't saved yet.</p>
+      <button data-act="save">Save &amp; exit</button>
+      <button data-act="discard" class="secondary danger">Discard changes</button>
+      <button data-act="stay" class="ghost">Keep editing</button>
+    </div>`;
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-act="save"]').addEventListener("click", () => { close(); onSave(); });
+  overlay.querySelector('[data-act="discard"]').addEventListener("click", () => { close(); onDiscard(); });
+  overlay.querySelector('[data-act="stay"]').addEventListener("click", close);
+  document.body.appendChild(overlay);
+}
+
+// Delete a habit and all its logs (used by the long-press menu and the habit screen).
+async function deleteHabit(h) {
+  if (!confirm(`Delete “${h.name}” and all its logs?`)) return;
+  const { error } = await db.from("habits").delete().eq("id", h.id);
+  if (error) return alert(error.message);
+  habits = habits.filter((x) => x.id !== h.id);
+  delete entriesByHabit[h.id];
+  if (screenHabitId === h.id) closeHabitScreen();
+  render();
 }
 
 /* ---------- Habit screen ---------- */
@@ -1253,9 +1343,58 @@ function renderHabitScreen() {
       <button class="wide danger" data-act="delete">Delete habit</button>
     </div>`;
 
-  panel.querySelector('[data-act="back"]').addEventListener("click", closeHabitScreen);
-
   const getColor = renderSwatches(panel.querySelector("#hs-color"), h.color, null);
+
+  // Read the edit form into a patch (no photo upload) — used for both saving and
+  // dirty-detection. Type-specific fields only exist for the matching type.
+  const readEdits = () => {
+    const type = $("hs-type").value;
+    const patch = {
+      name: $("hs-name").value.trim(),
+      emoji: $("hs-emoji").value.trim() || "✅",
+      type,
+      color: getColor(),
+      section_id: readSectionSelect("hs"),
+      pinned: $("hs-pinned").checked,
+      hidden: $("hs-hidden").checked,
+      paused: $("hs-paused") ? $("hs-paused").checked : (h.paused || false),
+    };
+    if (type === "buys") {
+      Object.assign(patch, { due_mode: "none", recurrence_days: null, reminder_lead_days: 0 });
+      if ($("hs-price")) Object.assign(patch, readBuysFields("hs"));
+    } else if ($("hs-recur")) {
+      const due = readDueControl("hs");
+      Object.assign(patch, { due_mode: due.due_mode, recurrence_days: due.recurrence_days, reminder_lead_days: due.reminder_lead_days });
+    }
+    return patch;
+  };
+  const isDirty = () => {
+    if (hsPhotoBlob) return true;
+    const p = readEdits();
+    // Loose (!=) on purpose: a numeric column can come back as a string ("30.00"),
+    // and null/undefined should read as unchanged — avoids false "unsaved" warnings.
+    return Object.keys(p).some((k) => (h[k] == null ? null : h[k]) != (p[k] == null ? null : p[k]));
+  };
+  const commit = async () => {
+    const patch = readEdits();
+    if (!patch.name) { alert("Name can't be empty."); return false; }
+    if (patch.type === "buys" && hsPhotoBlob) {
+      try { patch.photo_path = await uploadHabitPhoto(h.id, hsPhotoBlob); hsPhotoBlob = null; }
+      catch (e) { alert(e.message || "Couldn't upload that photo."); return false; }
+    }
+    const { error } = await db.from("habits").update(patch).eq("id", h.id);
+    if (error) { alert(error.message); return false; }
+    Object.assign(h, patch);
+    return true;
+  };
+
+  panel.querySelector('[data-act="back"]').addEventListener("click", () => {
+    if (!isDirty()) return closeHabitScreen();
+    confirmUnsaved(
+      async () => { if (await commit()) { render(); closeHabitScreen(); } },
+      () => closeHabitScreen()
+    );
+  });
   if (h.type === "buys") {
     loadHabitPhoto(h.id, h.photo_path);
     hsPhotoBlob = null;
@@ -1317,50 +1456,10 @@ function renderHabitScreen() {
   }
 
   panel.querySelector('[data-act="save"]').addEventListener("click", async () => {
-    const type = $("hs-type").value;
-    const patch = {
-      name: $("hs-name").value.trim(),
-      emoji: $("hs-emoji").value.trim() || "✅",
-      type,
-      color: getColor(),
-      section_id: readSectionSelect("hs"),
-      pinned: $("hs-pinned").checked,
-      hidden: $("hs-hidden").checked,
-      // The paused checkbox is hidden for "buys" (no reminders); keep its stored value.
-      paused: $("hs-paused") ? $("hs-paused").checked : (h.paused || false),
-    };
-    if (!patch.name) return alert("Name can't be empty.");
-
-    // The type-specific fields (buys vs. reminders) are only on screen for the
-    // matching type, so read them defensively — switching type then saving just
-    // re-categorizes; its fields fill in when the screen re-renders.
-    if (type === "buys") {
-      Object.assign(patch, { due_mode: "none", recurrence_days: null, reminder_lead_days: 0 });
-      if ($("hs-price")) Object.assign(patch, readBuysFields("hs"));
-      if (hsPhotoBlob) {
-        try { patch.photo_path = await uploadHabitPhoto(h.id, hsPhotoBlob); hsPhotoBlob = null; }
-        catch (e) { return alert(e.message || "Couldn't upload that photo."); }
-      }
-    } else if ($("hs-recur")) {
-      const due = readDueControl("hs");
-      Object.assign(patch, { due_mode: due.due_mode, recurrence_days: due.recurrence_days, reminder_lead_days: due.reminder_lead_days });
-    }
-
-    const { error } = await db.from("habits").update(patch).eq("id", h.id);
-    if (error) return alert(error.message);
-    Object.assign(h, patch);
-    renderHabitScreen(); render();
-    flashSuccess();
+    if (await commit()) { renderHabitScreen(); render(); flashSuccess(); }
   });
 
-  panel.querySelector('[data-act="delete"]').addEventListener("click", async () => {
-    if (!confirm(`Delete “${h.name}” and all its logs?`)) return;
-    const { error } = await db.from("habits").delete().eq("id", h.id);
-    if (error) return alert(error.message);
-    habits = habits.filter((x) => x.id !== h.id);
-    delete entriesByHabit[h.id];
-    closeHabitScreen(); render();
-  });
+  panel.querySelector('[data-act="delete"]').addEventListener("click", () => deleteHabit(h));
 }
 
 // Delete one or many entries, then refresh screen + grid.
@@ -1596,6 +1695,7 @@ function openLogSheet(h, tile) {
   overlay.innerHTML = `
     <div class="popover-card">
       <div class="popover-title">${h.emoji} ${escapeHtml(h.name)}</div>
+      <button data-act="screen" class="secondary">📋 Habit screen</button>
       <label>When?
         <input type="datetime-local" id="log-when" value="${toLocalInputValue(new Date())}" />
       </label>
@@ -1604,6 +1704,7 @@ function openLogSheet(h, tile) {
     </div>`;
   const close = () => overlay.remove();
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-act="screen"]').addEventListener("click", () => { close(); openHabitScreen(h.id); });
   overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
   overlay.querySelector('[data-act="confirm"]').addEventListener("click", () => {
     const v = $("log-when").value;
@@ -1966,13 +2067,18 @@ function renderSettingsScreen() {
       </section>
       <section class="card-section">
         <h3>Tab order</h3>
-        <p class="hint" style="margin:0">Drag to reorder your tabs. “Due” always stays first.</p>
+        <p class="hint" style="margin:0">Use the arrows to reorder your tabs. “Due” always stays first.</p>
         <div id="tab-reorder" class="tab-reorder">
-          ${orderedViews().filter((v) => v.key !== "due").map((v) => `
-            <div class="tab-row" data-key="${v.key}">
-              <span class="tab-drag" title="Drag to reorder">⠿</span>
+          ${reorderableKeys().map((k, i, arr) => {
+            const v = VIEWS.find((x) => x.key === k);
+            return `<div class="tab-row" data-key="${k}">
               <span class="tab-label">${escapeHtml(v.label)}</span>
-            </div>`).join("")}
+              <span class="tab-arrows">
+                <button type="button" class="tab-up" data-key="${k}"${i === 0 ? " disabled" : ""} aria-label="Move up">↑</button>
+                <button type="button" class="tab-down" data-key="${k}"${i === arr.length - 1 ? " disabled" : ""} aria-label="Move down">↓</button>
+              </span>
+            </div>`;
+          }).join("")}
         </div>
       </section>
       <section class="card-section">
@@ -1997,44 +2103,20 @@ function renderSettingsScreen() {
   });
   panel.querySelector('[data-act="json"]').addEventListener("click", exportJSON);
   panel.querySelector('[data-act="csv"]').addEventListener("click", exportCSV);
-  wireTabReorder($("tab-reorder"));
+  panel.querySelectorAll(".tab-up").forEach((b) => b.addEventListener("click", () => moveTab(b.dataset.key, -1)));
+  panel.querySelectorAll(".tab-down").forEach((b) => b.addEventListener("click", () => moveTab(b.dataset.key, 1)));
 }
 
-// Drag the rows in the Settings "Tab order" list; on drop, save + update the tab bar.
-// The whole row is the drag target (its children are pointer-events:none), so the
-// touch lands on an element with touch-action:none and isn't swallowed as a scroll.
-function wireTabReorder(container) {
-  if (!container) return;
-  let drag = null;
-  container.querySelectorAll(".tab-row").forEach((row) => {
-    row.addEventListener("pointerdown", (e) => {
-      if (e.button && e.button !== 0) return;
-      drag = row;
-      row.classList.add("dragging");
-      row.setPointerCapture(e.pointerId);
-      const move = (ev) => {
-        const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".tab-row");
-        if (!over || over === drag || over.parentElement !== container) return;
-        const r = over.getBoundingClientRect();
-        const after = (ev.clientY - r.top) > r.height / 2;
-        container.insertBefore(drag, after ? over.nextSibling : over);
-      };
-      const up = (ev) => {
-        row.releasePointerCapture(ev.pointerId);
-        row.classList.remove("dragging");
-        row.removeEventListener("pointermove", move);
-        row.removeEventListener("pointerup", up);
-        row.removeEventListener("pointercancel", up);
-        drag = null;
-        const keys = Array.from(container.querySelectorAll(".tab-row")).map((r) => r.dataset.key);
-        saveTabOrder(keys);
-        renderTabs();
-      };
-      row.addEventListener("pointermove", move);
-      row.addEventListener("pointerup", up);
-      row.addEventListener("pointercancel", up);
-    });
-  });
+// Move a tab one slot up (dir -1) or down (dir +1), persist, and refresh both the
+// tab bar and this settings list.
+function moveTab(key, dir) {
+  const keys = reorderableKeys();
+  const i = keys.indexOf(key), j = i + dir;
+  if (i < 0 || j < 0 || j >= keys.length) return;
+  [keys[i], keys[j]] = [keys[j], keys[i]];
+  saveTabOrder(keys);
+  renderTabs();
+  renderSettingsScreen();
 }
 
 // All logs as flat rows, joined to their habit later.
@@ -2285,6 +2367,8 @@ function urlB64ToUint8Array(base64) {
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if ($("cropper")) $("cropper").remove();
+  else if ($("confirm-unsaved")) $("confirm-unsaved").remove();
+  else if ($("section-picker")) $("section-picker").remove();
   else if ($("emoji-picker")) $("emoji-picker").remove();
   else if ($("log-sheet")) $("log-sheet").remove();
   else if ($("note-editor")) $("note-editor").remove();

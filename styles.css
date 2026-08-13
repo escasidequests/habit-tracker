@@ -167,9 +167,14 @@ button.secondary { background: transparent; border: 1px solid #3a4552; color: va
   font-size: 14px; flex: none;
 }
 
-/* Tile options popup */
+/* Tile options popup.
+   Z-INDEX RULE (read before adding any overlay): full-screen panels use `.screen`
+   at z-index 40. Every popover/sheet/dialog MUST sit ABOVE that, so `.popover` is 50.
+   Any new overlay that can open from a habit/settings/notif screen must use `.popover`
+   (or z-index >= 50) — a bare popup at a lower z-index renders BEHIND the screen and
+   looks broken. This has bitten us more than once (note-editor, log-sheet, cropper). */
 .popover {
-  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 30;
+  position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 50;
   display: grid; place-items: end center; padding: 20px;
   opacity: 0; transition: opacity .15s ease;
 }
@@ -187,6 +192,7 @@ button.secondary { background: transparent; border: 1px solid #3a4552; color: va
   padding: 4px 0 8px; color: var(--text);
 }
 .popover-card button { width: 100%; }
+.popover-card button.active { border-color: var(--people); color: var(--people); }
 button.ghost { background: transparent; color: var(--muted); border: 0; }
 
 /* Habit screen */
@@ -320,6 +326,12 @@ button:disabled { opacity: .5; cursor: default; }
 .tile .tile-flags {
   position: absolute; top: 6px; left: 6px; display: flex; gap: 3px; font-size: 11px; line-height: 1;
 }
+.tile .tile-more {
+  position: absolute; top: 2px; right: 4px; width: auto;
+  background: none; border: 0; color: var(--muted); opacity: .5;
+  font-size: 18px; line-height: 1; padding: 2px 6px; font-weight: 700;
+}
+.tile .tile-more:active { opacity: 1; }
 .tile.paused { opacity: .55; }
 .tile.paused .stat { color: var(--muted) !important; font-weight: 400; }
 .tile.is-hidden { opacity: .4; }
@@ -425,15 +437,19 @@ button:disabled { opacity: .5; cursor: default; }
 /* ---- Buys tile thumbnail (square crop, in place of the emoji) ---- */
 .tile-thumb { width: 38px; height: 38px; object-fit: cover; border-radius: 9px; vertical-align: middle; background: var(--card-2); }
 
-/* ---- Settings: drag-to-reorder tab list ---- */
+/* ---- Settings: reorder tab list (up/down arrows) ---- */
 .tab-reorder { display: flex; flex-direction: column; gap: 6px; }
 .tab-row {
   display: flex; align-items: center; gap: 10px; background: var(--card-2);
-  border-radius: 9px; padding: 10px 12px; touch-action: none; user-select: none;
+  border-radius: 9px; padding: 8px 12px;
 }
-.tab-row.dragging { opacity: .6; }
-.tab-row .tab-drag { cursor: grab; color: var(--muted); font-size: 16px; pointer-events: none; }
-.tab-row .tab-label { font-size: 14px; font-weight: 600; pointer-events: none; }
+.tab-row .tab-label { font-size: 14px; font-weight: 600; flex: 1; }
+.tab-arrows { display: flex; gap: 6px; }
+.tab-arrows button {
+  background: var(--card); border: 1px solid #3a4552; color: var(--text);
+  font-size: 16px; line-height: 1; padding: 6px 12px; border-radius: 8px; font-weight: 700;
+}
+.tab-arrows button:disabled { opacity: .35; }
 
 /* ---- Photo cropper ---- */
 .cropper-card { align-items: center; }
