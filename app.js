@@ -83,7 +83,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "34";
+const APP_BUILD = "35";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -98,10 +98,12 @@ let sortMode = "manual";   // manual | activity | created | alpha
 let dayStartHour = 0;      // 0-11; when a new "day" begins for calendar-day counts
 let tabOrder = null;       // saved order of the reorderable tabs (keys, "due" excluded); null = default
 let searchTerm = "";
+let searchAllTabs = localStorage.getItem("searchAllTabs") === "1"; // search across all tabs
 let showHidden = false;
 let reorderMode = false;
 let newHabitColor = null;  // color chosen in the add-habit form
 let newHabitType = "build"; // type chosen in step 1 of the add flow
+let newHabitSection = null;  // section to pre-fill when adding via a section "+"
 let newHabitPhotoBlob = null; // cropped photo staged in the add form, uploaded after insert
 let hsPhotoBlob = null;       // cropped photo staged on the habit screen, uploaded on Save
 
@@ -387,6 +389,15 @@ function fmtMoney(n) {
   return "$" + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// Rough human duration for a day count: days → weeks → months → years.
+function humanizeDuration(days) {
+  if (days < 14) return `${days} day${days === 1 ? "" : "s"}`;
+  if (days < 60) { const w = Math.round(days / 7); return `${w} week${w === 1 ? "" : "s"}`; }
+  if (days < 730) { const m = Math.round(days / 30); return `${m} month${m === 1 ? "" : "s"}`; }
+  const y = (days / 365).toFixed(1).replace(/\.0$/, "");
+  return `${y} year${y === "1" ? "" : "s"}`;
+}
+
 // The card that replaces the Trend chart on a "buys" item's screen. Each log is a
 // "wear", so cost-per-wear = price / number of logs. The <img> is filled in async
 // by loadHabitPhoto() once its signed URL comes back.
@@ -405,6 +416,13 @@ function buildBuysCard(h) {
   meta.push(`${count} wear${count === 1 ? "" : "s"}`);
   if (h.date_purchased) meta.push(`bought ${fmtDate(new Date(h.date_purchased + "T00:00:00"))}`);
 
+  // Wears-since-purchase pace, e.g. "Worn 12× over 3 months".
+  let pace = "";
+  if (h.date_purchased && count > 0) {
+    const days = Math.floor((Date.now() - new Date(h.date_purchased + "T00:00:00").getTime()) / DAY);
+    if (days >= 1) pace = `Worn ${count}× over ${humanizeDuration(days)}`;
+  }
+
   const photo = h.photo_path
     ? `<img class="buys-photo" data-photo="${h.id}" alt="${escapeAttr(h.name)}" />`
     : "";
@@ -414,6 +432,7 @@ function buildBuysCard(h) {
     <div class="ppw-big">${headline}</div>
     <div class="ppw-lbl">${sublabel}</div>
     <div class="buys-meta">${meta.join(" · ")}</div>
+    ${pace ? `<div class="buys-pace">${pace}</div>` : ""}
     ${h.description ? `<p class="buys-desc">${escapeHtml(h.description)}</p>` : ""}
   </section>`;
 }
@@ -694,6 +713,15 @@ function render() {
   const q = searchTerm.trim().toLowerCase();
   const matches = (h) => !q || h.name.toLowerCase().includes(q);
 
+  // "All tabs" search: while searching with the scope toggle on, show one flat list
+  // of matches across every type, ignoring the current tab.
+  if (q && searchAllTabs) {
+    const results = habits.filter((h) => matches(h) && (showHidden || !h.hidden));
+    if (results.length) renderGroup(grid, "Results — all tabs", sortForGroup(results));
+    else grid.appendChild(msgEl("No matching habits in any tab."));
+    return;
+  }
+
   if (reorderMode) {
     grid.appendChild(hintEl("Drag ⠿ to reorder sections · drag tiles to reorder · tap a section name to rename or delete · Done when finished. (Add a habit to a section from its screen.)"));
   }
@@ -730,7 +758,7 @@ function render() {
   }
 
   const hiddenInView = habits.filter((h) => view.types.includes(h.type) && matches(h) && h.hidden).length;
-  if (!any && !hiddenInView) grid.appendChild(msgEl(q ? "No matching habits." : "No habits here yet — add one with “+ Habit”."));
+  if (!any && !hiddenInView) grid.appendChild(q ? msgEl("No matching habits.") : emptyTabEl(view));
   if (hiddenInView) {
     const btn = document.createElement("button");
     btn.className = "show-hidden";
@@ -754,6 +782,11 @@ function renderControls() {
   reorderBtn.classList.toggle("hidden", onDue); // sections are reorderable in any sort mode
   reorderBtn.classList.toggle("active", reorderMode);
   reorderBtn.textContent = reorderMode ? "Done" : "Reorder";
+  // Scope toggle only matters while a search is active.
+  const scope = $("search-scope");
+  scope.classList.toggle("hidden", !searchTerm.trim());
+  scope.textContent = searchAllTabs ? "All tabs" : "This tab";
+  scope.classList.toggle("active", searchAllTabs);
 }
 
 // Tab bar across the top; the "Due" tab carries a live count badge.
@@ -803,8 +836,11 @@ function renderSectionGroup(grid, section, list) {
       (isReal ? `<span class="section-toggle">${collapsed ? "▶" : "▼"}</span>` : "") +
       `<h2>${escapeHtml(section.name)}</h2>` +
       `<span class="section-count">${list.length}</span>` +
+      (!reorderMode ? `<button class="section-add" title="Add a habit here" aria-label="Add a habit here">＋</button>` : "") +
       (reorderMode && isReal ? `<span class="section-drag" title="Drag to reorder">⠿</span>` : "");
     group.appendChild(head);
+    const addBtn = head.querySelector(".section-add");
+    if (addBtn) addBtn.addEventListener("click", (e) => { e.stopPropagation(); addHabitToSection(section.id || null); });
     if (reorderMode && isReal) {
       head.querySelector(".section-toggle").style.visibility = "hidden"; // no collapsing mid-reorder
       const name = head.querySelector("h2");
@@ -1200,16 +1236,49 @@ function confirmUnsaved(onSave, onDiscard) {
   document.body.appendChild(overlay);
 }
 
-// Delete a habit and all its logs (used by the long-press menu and the habit screen).
-async function deleteHabit(h) {
-  if (!confirm(`Delete “${h.name}” and all its logs?`)) return;
-  const { error } = await db.from("habits").delete().eq("id", h.id);
-  if (error) return alert(error.message);
+// Deleting a habit is deferred ~5s behind an Undo toast (no confirm dialog). The tile
+// disappears immediately; the actual DB delete only fires once the window passes, so
+// Undo is instant. Used by the long-press menu and the habit screen.
+let pendingDelete = null; // { habit, entries, timer }
+
+function deleteHabit(h) {
+  commitPendingDelete(); // flush any earlier pending delete first
+  pendingDelete = { habit: h, entries: entriesByHabit[h.id] || [], timer: null };
   habits = habits.filter((x) => x.id !== h.id);
   delete entriesByHabit[h.id];
   if (screenHabitId === h.id) closeHabitScreen();
   render();
+  showToast(`Deleted ${h.emoji} ${h.name}`, undoDelete);
+  pendingDelete.timer = setTimeout(commitPendingDelete, 5000);
 }
+
+function undoDelete() {
+  if (!pendingDelete) return;
+  clearTimeout(pendingDelete.timer);
+  const { habit, entries } = pendingDelete;
+  pendingDelete = null;
+  habits.push(habit);
+  entriesByHabit[habit.id] = entries;
+  render();
+  hideToast();
+}
+
+// Commit the pending delete to the DB (called when the undo window lapses, before a
+// new delete, or when the app is backgrounded so a refresh can't resurrect it).
+async function commitPendingDelete() {
+  if (!pendingDelete) return;
+  const { habit, entries, timer } = pendingDelete;
+  clearTimeout(timer);
+  pendingDelete = null;
+  const { error } = await db.from("habits").delete().eq("id", habit.id);
+  if (error) { // restore on failure
+    habits.push(habit);
+    entriesByHabit[habit.id] = entries;
+    render();
+    alert(error.message);
+  }
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden) commitPendingDelete(); });
 
 /* ---------- Habit screen ---------- */
 
@@ -1552,6 +1621,19 @@ function hintEl(text) {
   return p;
 }
 
+// Friendly empty state for a tab with no habits, with a one-tap add for this tab's type.
+function emptyTabEl(view) {
+  const div = document.createElement("div");
+  div.className = "empty-welcome";
+  const emoji = TYPE_EMOJI[view.types[0]] || "✨";
+  div.innerHTML = `
+    <div class="ew-emoji">${emoji}</div>
+    <p class="msg">Nothing in ${escapeHtml(view.label)} yet.</p>
+    <button class="wide" data-act="add">＋ Add a habit here</button>`;
+  div.querySelector('[data-act="add"]').addEventListener("click", () => addHabitToSection(null));
+  return div;
+}
+
 // Renders a row of color swatches into `container`. Returns a getter for the
 // currently-selected color (null = "no custom color, use type color").
 function renderSwatches(container, selected, onChange) {
@@ -1847,11 +1929,12 @@ function openEmojiPicker(input) {
   overlay.innerHTML = `
     <div class="popover-card emoji-card">
       <div class="popover-title">Pick an emoji</div>
-      <div class="emoji-scroll">${cats}</div>
-      <label>Or type your own
-        <input type="text" id="emoji-custom-in" maxlength="8" value="${escapeAttr(input.value)}" />
+      <label class="emoji-custom">Type or paste your own
+        <input type="text" id="emoji-custom-in" maxlength="8" value="${escapeAttr(input.value)}" placeholder="e.g. 🧣" />
       </label>
-      <button data-act="done" class="secondary">Done</button>
+      <div class="emoji-or">or pick one</div>
+      <div class="emoji-scroll">${cats}</div>
+      <button data-act="done">Done</button>
     </div>`;
   const close = () => overlay.remove();
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
@@ -1869,21 +1952,35 @@ function openEmojiPicker(input) {
 const TYPE_EMOJI = { build: "🌱", break: "🚫", track: "📋", bonds: "🤝", buys: "🛍️" };
 
 // Step 1: "+ Habit" opens a type picker; choosing a type opens the step-2 form.
-$("add-habit").addEventListener("click", openTypePicker);
+$("add-habit").addEventListener("click", () => { newHabitSection = null; openTypePicker(); });
 $("type-cancel").addEventListener("click", () => $("type-modal").classList.add("hidden"));
 $("type-suggest").addEventListener("click", () => openSuggestions()); // all types
 $("h-back").addEventListener("click", () => { $("modal").classList.add("hidden"); $("habit-form").reset(); openTypePicker(); });
 
-function openTypePicker() {
+// `limitKeys` (optional) restricts the choices — used by a section "+" on a tab that
+// spans multiple types (Build & Track). Hides "Browse suggestions" in that case.
+function openTypePicker(limitKeys) {
   const wrap = $("type-picker");
-  wrap.innerHTML = TYPES.map((t) => `
+  const types = limitKeys ? TYPES.filter((t) => limitKeys.includes(t.key)) : TYPES;
+  wrap.innerHTML = types.map((t) => `
     <button type="button" class="type-choice" data-type="${t.key}" style="--type:${t.color}">
       <span class="tc-emoji">${TYPE_EMOJI[t.key]}</span>
       <span class="tc-text"><b>${t.label}</b><small>${TYPE_DESC[t.key]}</small></span>
     </button>`).join("");
   wrap.querySelectorAll(".type-choice").forEach((b) =>
     b.addEventListener("click", () => openHabitForm(b.dataset.type)));
+  $("type-suggest").style.display = limitKeys ? "none" : "";
   $("type-modal").classList.remove("hidden");
+}
+
+// A section "+" adds a habit of the tab's type into that section. Multi-type tabs
+// (Build & Track) ask which type first; single-type tabs skip to the form.
+function addHabitToSection(sectionId) {
+  const view = VIEWS.find((v) => v.key === currentView);
+  if (!view || !view.types || !view.types.length) return;
+  newHabitSection = sectionId || null;
+  if (view.types.length === 1) openHabitForm(view.types[0]);
+  else openTypePicker(view.types);
 }
 
 // Step 2: the type-specific New-habit form.
@@ -1897,7 +1994,7 @@ function openHabitForm(type) {
   $("h-title").textContent = `New ${label}`;
   wireEmojiInput($("h-emoji"));
   renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
-  $("h-section-wrap").innerHTML = sectionSelectHtml("h", "");
+  $("h-section-wrap").innerHTML = sectionSelectHtml("h", newHabitSection || "");
   wireSectionSelect("h");
   // Buys → price/photo/etc.; every other type → the reminders control.
   if (type === "buys") {
@@ -1915,6 +2012,11 @@ function openHabitForm(type) {
 
 /* ---------- Search / sort / reorder controls ---------- */
 $("search").addEventListener("input", (e) => { searchTerm = e.target.value; render(); });
+$("search-scope").addEventListener("click", () => {
+  searchAllTabs = !searchAllTabs;
+  localStorage.setItem("searchAllTabs", searchAllTabs ? "1" : "0");
+  render();
+});
 $("sort").addEventListener("change", (e) => { saveSortMode(e.target.value); render(); });
 $("reorder").addEventListener("click", () => { reorderMode = !reorderMode; render(); });
 

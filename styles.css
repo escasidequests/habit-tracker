@@ -457,3 +457,21 @@ button:disabled { opacity: .5; cursor: default; }
 .crop-canvas:active { cursor: grabbing; }
 .crop-zoom { width: 288px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
 .crop-zoom input[type="range"] { flex: 1; }
+
+/* Section "+" add-here button */
+.section-add {
+  flex: none; width: auto; background: var(--card-2); color: var(--muted);
+  border: 0; font-size: 16px; line-height: 1; padding: 3px 10px; border-radius: 999px; font-weight: 700;
+}
+.section-add:active { color: var(--text); }
+
+/* Search scope toggle (active state) */
+#search-scope.active { background: var(--people); color: #fff; border-color: var(--people); }
+
+/* Buys: wears-since-purchase pace line */
+.buys-pace { font-size: 13px; color: var(--muted); }
+
+/* Emoji picker: prominent "type your own" at the top */
+.emoji-custom { background: var(--card-2); border-radius: 10px; padding: 10px 12px; gap: 8px; }
+.emoji-custom input { font-size: 20px; text-align: center; }
+.emoji-or { text-align: center; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
