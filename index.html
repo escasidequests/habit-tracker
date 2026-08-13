@@ -72,26 +72,30 @@
     <p class="hint">Tap a habit to log it · press &amp; hold for options</p>
   </section>
 
-  <!-- Add-habit modal -->
+  <!-- Add-habit step 1: choose a type -->
+  <div id="type-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>What are you adding?</h2>
+      <div id="type-picker" class="type-picker"></div>
+      <button type="button" id="type-suggest" class="suggest-btn">✨ Browse suggestions <span>›</span></button>
+      <div class="modal-actions">
+        <button type="button" id="type-cancel" class="secondary">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add-habit step 2: the type-specific form -->
   <div id="modal" class="modal hidden">
     <form id="habit-form" class="modal-card">
-      <h2>New habit</h2>
+      <h2 id="h-title">New habit</h2>
       <button type="button" id="open-suggestions" class="suggest-btn">✨ Browse suggestions <span>›</span></button>
       <label>Emoji <input id="h-emoji" maxlength="8" value="✅" /></label>
       <label>Name <input id="h-name" required /></label>
       <label>Color <div id="h-color" class="swatches"></div></label>
-      <label>Type
-        <select id="h-type">
-          <option value="build">Build — do it more/sooner</option>
-          <option value="break">Break — go longer without it</option>
-          <option value="track">Track — just keeping tabs</option>
-          <option value="bonds">Bonds — stay in touch</option>
-        </select>
-      </label>
       <div id="h-section-wrap"></div>
-      <div id="h-due-control"></div>
+      <div id="h-extra"></div>
       <div class="modal-actions">
-        <button type="button" id="h-cancel" class="secondary">Cancel</button>
+        <button type="button" id="h-back" class="secondary">‹ Back</button>
         <button type="submit">Add</button>
       </div>
     </form>

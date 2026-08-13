@@ -8,6 +8,7 @@
   --bad: #e5533c;
   --neutral: #7f8b98;
   --people: #4f8cf5;
+  --buys: #a06cd5;
   --overdue: #f0b429;
   --radius: 14px;
 }
@@ -396,3 +397,27 @@ button:disabled { opacity: .5; cursor: default; }
 .empty-welcome .ew-emoji { font-size: 44px; }
 .empty-welcome h2 { margin: 4px 0 0; font-size: 20px; }
 .empty-welcome .wide { margin-top: 8px; }
+
+/* ---- Add step 1: type picker ---- */
+.type-picker { display: flex; flex-direction: column; gap: 8px; }
+.type-choice {
+  display: flex; align-items: center; gap: 12px; text-align: left;
+  background: var(--card-2); color: var(--text); border: 1px solid transparent;
+  border-left: 4px solid var(--type, var(--neutral)); border-radius: 10px; padding: 12px 14px;
+}
+.type-choice:active { border-color: var(--type, var(--neutral)); }
+.type-choice .tc-emoji { font-size: 26px; line-height: 1; }
+.type-choice .tc-text { display: flex; flex-direction: column; gap: 2px; }
+.type-choice .tc-text b { font-size: 15px; }
+.type-choice .tc-text small { font-size: 12px; color: var(--muted); }
+
+/* ---- Buys: cost-per-wear card ---- */
+.buys-card { align-items: center; text-align: center; }
+.buys-photo {
+  width: 100%; max-height: 260px; object-fit: cover; border-radius: 10px; background: var(--card-2);
+}
+.buys-photo.edit { max-height: 140px; width: auto; max-width: 100%; }
+.ppw-big { font-size: 40px; font-weight: 800; color: var(--buys); line-height: 1; }
+.ppw-lbl { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.buys-meta { font-size: 14px; color: var(--text); }
+.buys-desc { margin: 4px 0 0; font-size: 14px; color: var(--muted); }

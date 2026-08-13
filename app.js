@@ -8,12 +8,23 @@ const db = supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
 //   break — going longer without it is the win (longer gaps are good)
 //   track — no direction, just keeping tabs
 //   bonds — staying in touch with people (shorter gaps are good)
+//   buys  — an owned item you amortize; each log is one "wear" (cost-per-wear)
 const TYPES = [
   { key: "build", label: "Build", color: "var(--good)" },
   { key: "break", label: "Break", color: "var(--bad)" },
   { key: "track", label: "Track", color: "var(--neutral)" },
   { key: "bonds", label: "Bonds", color: "var(--people)" },
+  { key: "buys",  label: "Buys",  color: "var(--buys)" },
 ];
+
+// Type descriptions for the "What are you adding?" picker (step 1 of the add flow).
+const TYPE_DESC = {
+  build: "Do it more or sooner",
+  break: "Go longer without it",
+  track: "Just keep tabs",
+  bonds: "Stay in touch",
+  buys:  "Track an item's cost per wear",
+};
 
 // Legacy → new type values, applied on load so the app keeps working during the
 // window between deploying this build and running the phase7.sql migration.
@@ -27,6 +38,7 @@ const VIEWS = [
   { key: "build", label: "Build & Track", types: ["build", "track"] },
   { key: "break", label: "Break", types: ["break"] },
   { key: "bonds", label: "Bonds", types: ["bonds"] },
+  { key: "buys", label: "Buys", types: ["buys"] },
 ];
 let currentView = localStorage.getItem("habitView") || "due";
 if (!VIEWS.some((v) => v.key === currentView)) currentView = "due"; // heal a stale saved tab
@@ -71,7 +83,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "30";
+const APP_BUILD = "31";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -88,6 +100,7 @@ let searchTerm = "";
 let showHidden = false;
 let reorderMode = false;
 let newHabitColor = null;  // color chosen in the add-habit form
+let newHabitType = "build"; // type chosen in step 1 of the add flow
 
 /* ---------- Auth ---------- */
 
@@ -114,10 +127,7 @@ $("install-dismiss").addEventListener("click", () => {
 });
 
 // Empty-state shortcut straight into the suggestions browser.
-$("empty-suggest").addEventListener("click", () => {
-  openAddHabit();
-  openSuggestions();
-});
+$("empty-suggest").addEventListener("click", () => openSuggestions());
 
 $("auth-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -287,7 +297,7 @@ function predictInterval(habitId) {
 
 // Hex equivalents of the type CSS vars — SVG stroke can't resolve var(--x).
 const TYPE_HEX = {
-  build: "#37b26b", break: "#e5533c", track: "#7f8b98", bonds: "#4f8cf5",
+  build: "#37b26b", break: "#e5533c", track: "#7f8b98", bonds: "#4f8cf5", buys: "#a06cd5",
 };
 function trendColor(h) { return h.color || TYPE_HEX[h.type] || "#7f8b98"; }
 
@@ -337,6 +347,110 @@ function buildTrend(h) {
       ${cfg.caption ? `<p class="hint" style="margin:0">${cfg.caption}</p>` : ""}`;
   }
   return `<section class="card-section"><h3>${cfg.title}</h3>${body}</section>`;
+}
+
+/* ---------- "Buys" cost-per-wear card + item photos ---------- */
+
+function fmtMoney(n) {
+  return "$" + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// The card that replaces the Trend chart on a "buys" item's screen. Each log is a
+// "wear", so cost-per-wear = price / number of logs. The <img> is filled in async
+// by loadHabitPhoto() once its signed URL comes back.
+function buildBuysCard(h) {
+  const { count } = stats(h.id);
+  const hasPrice = h.price != null;
+  const ppw = hasPrice && count > 0 ? h.price / count : null;
+
+  const headline = ppw != null ? fmtMoney(ppw) : hasPrice ? fmtMoney(h.price) : "—";
+  const sublabel = ppw != null ? "per wear"
+    : hasPrice ? "wear it to start"
+    : "add a price to see cost per wear";
+
+  const meta = [];
+  if (hasPrice) meta.push(`Paid ${fmtMoney(h.price)}`);
+  meta.push(`${count} wear${count === 1 ? "" : "s"}`);
+  if (h.date_purchased) meta.push(`bought ${fmtDate(new Date(h.date_purchased + "T00:00:00"))}`);
+
+  const photo = h.photo_path
+    ? `<img class="buys-photo" data-photo="${h.id}" alt="${escapeAttr(h.name)}" />`
+    : "";
+
+  return `<section class="card-section buys-card">
+    ${photo}
+    <div class="ppw-big">${headline}</div>
+    <div class="ppw-lbl">${sublabel}</div>
+    <div class="buys-meta">${meta.join(" · ")}</div>
+    ${h.description ? `<p class="buys-desc">${escapeHtml(h.description)}</p>` : ""}
+  </section>`;
+}
+
+// Fetch a short-lived signed URL for a private photo and drop it into every <img>
+// that references it (the card + the edit-form preview).
+async function loadHabitPhoto(habitId, path) {
+  if (!path) return;
+  const imgs = document.querySelectorAll(`img[data-photo="${habitId}"]`);
+  if (!imgs.length) return;
+  const { data, error } = await db.storage.from("habit-photos").createSignedUrl(path, 3600);
+  if (!error && data) imgs.forEach((img) => (img.src = data.signedUrl));
+}
+
+// The price/date/description/photo inputs for a "buys" item — shared by the add
+// form (prefix "h", no existing values) and the habit screen (prefix "hs").
+function buysFieldsHtml(prefix, h) {
+  const price = h && h.price != null ? h.price : "";
+  const date = h && h.date_purchased ? h.date_purchased : "";
+  const desc = h && h.description ? h.description : "";
+  const current = h && h.photo_path
+    ? `<img class="buys-photo edit" data-photo="${h.id}" alt="current photo" />`
+    : "";
+  return `
+    <label>Price <input id="${prefix}-price" type="number" min="0" step="0.01" inputmode="decimal" value="${price}" placeholder="0.00" /></label>
+    <label>Date purchased <input id="${prefix}-purchased" type="date" value="${date}" /></label>
+    <label>Description <textarea id="${prefix}-desc" rows="2" placeholder="e.g. navy wool coat">${escapeHtml(desc)}</textarea></label>
+    <label>Photo <input id="${prefix}-photo" type="file" accept="image/*" /></label>
+    ${current}`;
+}
+
+function readBuysFields(prefix) {
+  const price = $(`${prefix}-price`).value.trim();
+  return {
+    price: price === "" ? null : Number(price),
+    date_purchased: $(`${prefix}-purchased`).value || null,
+    description: $(`${prefix}-desc`).value.trim() || null,
+  };
+}
+
+// Shrink a photo in the browser before upload: cap the longest side at ~1000px and
+// re-encode as JPEG. A multi-MB phone photo becomes a couple hundred KB. Returns a Blob.
+function shrinkImage(file, maxSide = 1000, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Couldn't process that image."))), "image/jpeg", quality);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Couldn't read that image.")); };
+    img.src = url;
+  });
+}
+
+// Shrink + upload an item photo to the user's private folder, returning its path.
+async function uploadHabitPhoto(habitId, file) {
+  const blob = await shrinkImage(file);
+  const { data: u } = await db.auth.getUser();
+  const path = `${u.user.id}/${habitId}.jpg`;
+  const { error } = await db.storage.from("habit-photos")
+    .upload(path, blob, { upsert: true, contentType: "image/jpeg" });
+  if (error) throw error;
+  return path;
 }
 
 function sinceText(daysSince) {
@@ -913,9 +1027,9 @@ function renderHabitScreen() {
       </div>
       ${cadence ? `<p class="cadence">${cadence}</p>` : ""}
 
-      <button class="wide" data-act="lognow">Log a new entry now</button>
+      <button class="wide" data-act="lognow">${h.type === "buys" ? "Log a wear now" : "Log a new entry now"}</button>
 
-      ${buildTrend(h)}
+      ${h.type === "buys" ? buildBuysCard(h) : buildTrend(h)}
 
       <section class="card-section">
         <h3>Backdate a log</h3>
@@ -942,9 +1056,11 @@ function renderHabitScreen() {
         </label>
         <label>Color <div id="hs-color" class="swatches"></div></label>
         ${sectionSelectHtml("hs", h.section_id || "")}
-        ${dueControlHtml("hs", h.due_mode, h.recurrence_days, h.reminder_lead_days)}
+        ${h.type === "buys"
+          ? buysFieldsHtml("hs", h)
+          : dueControlHtml("hs", h.due_mode, h.recurrence_days, h.reminder_lead_days)}
         <label class="row"><input id="hs-pinned" type="checkbox"${h.pinned ? " checked" : ""} /> Pin to top</label>
-        <label class="row"><input id="hs-paused" type="checkbox"${h.paused ? " checked" : ""} /> Paused (no reminders)</label>
+        ${h.type === "buys" ? "" : `<label class="row"><input id="hs-paused" type="checkbox"${h.paused ? " checked" : ""} /> Paused (no reminders)</label>`}
         <label class="row"><input id="hs-hidden" type="checkbox"${h.hidden ? " checked" : ""} /> Hide from main view</label>
       </section>
 
@@ -954,7 +1070,8 @@ function renderHabitScreen() {
   panel.querySelector('[data-act="back"]').addEventListener("click", closeHabitScreen);
 
   const getColor = renderSwatches(panel.querySelector("#hs-color"), h.color, null);
-  wireDueControl("hs");
+  if (h.type === "buys") loadHabitPhoto(h.id, h.photo_path);
+  else wireDueControl("hs"); // buys has no due control to wire
   wireSectionSelect("hs");
   wireEmojiInput(panel.querySelector("#hs-emoji"));
   panel.querySelectorAll("[data-note]").forEach((b) =>
@@ -996,21 +1113,36 @@ function renderHabitScreen() {
   }
 
   panel.querySelector('[data-act="save"]').addEventListener("click", async () => {
-    const due = readDueControl("hs");
+    const type = $("hs-type").value;
     const patch = {
       name: $("hs-name").value.trim(),
       emoji: $("hs-emoji").value.trim() || "✅",
-      type: $("hs-type").value,
+      type,
       color: getColor(),
       section_id: readSectionSelect("hs"),
-      due_mode: due.due_mode,
-      recurrence_days: due.recurrence_days,
-      reminder_lead_days: due.reminder_lead_days,
       pinned: $("hs-pinned").checked,
-      paused: $("hs-paused").checked,
       hidden: $("hs-hidden").checked,
+      // The paused checkbox is hidden for "buys" (no reminders); keep its stored value.
+      paused: $("hs-paused") ? $("hs-paused").checked : (h.paused || false),
     };
     if (!patch.name) return alert("Name can't be empty.");
+
+    // The type-specific fields (buys vs. reminders) are only on screen for the
+    // matching type, so read them defensively — switching type then saving just
+    // re-categorizes; its fields fill in when the screen re-renders.
+    if (type === "buys") {
+      Object.assign(patch, { due_mode: "none", recurrence_days: null, reminder_lead_days: 0 });
+      if ($("hs-price")) Object.assign(patch, readBuysFields("hs"));
+      const file = $("hs-photo") && $("hs-photo").files[0];
+      if (file) {
+        try { patch.photo_path = await uploadHabitPhoto(h.id, file); }
+        catch (e) { return alert(e.message || "Couldn't upload that photo."); }
+      }
+    } else if ($("hs-recur")) {
+      const due = readDueControl("hs");
+      Object.assign(patch, { due_mode: due.due_mode, recurrence_days: due.recurrence_days, reminder_lead_days: due.reminder_lead_days });
+    }
+
     const { error } = await db.from("habits").update(patch).eq("id", h.id);
     if (error) return alert(error.message);
     Object.assign(h, patch);
@@ -1079,6 +1211,10 @@ function fmtDateTime(d) {
   return d.toLocaleString(undefined, {
     year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
   });
+}
+
+function fmtDate(d) {
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 function escapeAttr(s) {
@@ -1424,20 +1560,49 @@ function openEmojiPicker(input) {
 
 /* ---------- Add habit modal ---------- */
 
-$("add-habit").addEventListener("click", openAddHabit);
-$("h-cancel").addEventListener("click", () => { $("modal").classList.add("hidden"); $("habit-form").reset(); });
+// Big emoji for each type on the step-1 "What are you adding?" picker.
+const TYPE_EMOJI = { build: "🌱", break: "🚫", track: "📋", bonds: "🤝", buys: "🛍️" };
 
-// Open the New-habit form with a fresh color picker.
-function openAddHabit() {
+// Step 1: "+ Habit" opens a type picker; choosing a type opens the step-2 form.
+$("add-habit").addEventListener("click", openTypePicker);
+$("type-cancel").addEventListener("click", () => $("type-modal").classList.add("hidden"));
+$("type-suggest").addEventListener("click", () => openSuggestions()); // all types
+$("h-back").addEventListener("click", () => { $("modal").classList.add("hidden"); $("habit-form").reset(); openTypePicker(); });
+
+function openTypePicker() {
+  const wrap = $("type-picker");
+  wrap.innerHTML = TYPES.map((t) => `
+    <button type="button" class="type-choice" data-type="${t.key}" style="--type:${t.color}">
+      <span class="tc-emoji">${TYPE_EMOJI[t.key]}</span>
+      <span class="tc-text"><b>${t.label}</b><small>${TYPE_DESC[t.key]}</small></span>
+    </button>`).join("");
+  wrap.querySelectorAll(".type-choice").forEach((b) =>
+    b.addEventListener("click", () => openHabitForm(b.dataset.type)));
+  $("type-modal").classList.remove("hidden");
+}
+
+// Step 2: the type-specific New-habit form.
+function openHabitForm(type) {
+  newHabitType = type;
+  newHabitColor = null;
+  const label = (TYPES.find((t) => t.key === type) || {}).label || "habit";
+  $("type-modal").classList.add("hidden");
   $("habit-form").reset();
   $("h-emoji").value = "✅";
+  $("h-title").textContent = `New ${label}`;
   wireEmojiInput($("h-emoji"));
+  renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
   $("h-section-wrap").innerHTML = sectionSelectHtml("h", "");
   wireSectionSelect("h");
-  $("h-due-control").innerHTML = dueControlHtml("h", "none", 7, 0);
-  wireDueControl("h");
-  newHabitColor = null;
-  renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
+  // Buys → price/photo/etc.; every other type → the reminders control.
+  if (type === "buys") {
+    $("h-extra").innerHTML = buysFieldsHtml("h", null);
+  } else {
+    $("h-extra").innerHTML = dueControlHtml("h", "none", 7, 0);
+    wireDueControl("h");
+  }
+  // Step-2 suggestions button only shows for types that have starter suggestions.
+  $("open-suggestions").style.display = SUGGESTIONS.some((s) => s.type === type) ? "" : "none";
   $("modal").classList.remove("hidden");
 }
 
@@ -1448,9 +1613,11 @@ $("reorder").addEventListener("click", () => { reorderMode = !reorderMode; rende
 
 /* ---------- Suggested habits ---------- */
 
-$("open-suggestions").addEventListener("click", openSuggestions);
+// Step-2 form's suggestions button: filtered to the chosen type.
+$("open-suggestions").addEventListener("click", () => openSuggestions(newHabitType));
 
-function openSuggestions() {
+// `filterType` limits the list to one type (step-2 button); null shows all (step-1 button).
+function openSuggestions(filterType) {
   let panel = $("suggest-screen");
   if (!panel) {
     panel = document.createElement("section");
@@ -1462,6 +1629,7 @@ function openSuggestions() {
 
   let body = "";
   for (const t of TYPES) {
+    if (filterType && t.key !== filterType) continue;
     const items = SUGGESTIONS
       .map((s, i) => ({ s, i }))
       .filter(({ s }) => s.type === t.key && !have.has(s.name.toLowerCase()));
@@ -1498,35 +1666,48 @@ function closeSuggestions() {
   if (p) p.remove();
 }
 
-// Drop a suggestion into the (already-open) New habit form for editing.
+// Open the step-2 form for a suggestion's type, then prefill its name/emoji/cadence.
 function prefillHabitForm(s) {
-  $("modal").classList.remove("hidden");
+  openHabitForm(s.type);
   $("h-emoji").value = s.emoji;
   $("h-name").value = s.name;
-  $("h-type").value = s.type;
-  $("h-due-control").innerHTML = dueControlHtml("h", s.days ? "recurrence" : "none", s.days || 7, 0);
-  wireDueControl("h");
-  newHabitColor = null;
-  renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
+  if (s.type !== "buys") {
+    $("h-extra").innerHTML = dueControlHtml("h", s.days ? "recurrence" : "none", s.days || 7, 0);
+    wireDueControl("h");
+  }
 }
 
 $("habit-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const { data: u } = await db.auth.getUser();
-  const due = readDueControl("h");
-  const { data, error } = await db.from("habits").insert({
+  const row = {
     user_id: u.user.id,
     name: $("h-name").value.trim(),
-    type: $("h-type").value,
+    type: newHabitType,
     emoji: $("h-emoji").value.trim() || "✅",
     color: newHabitColor,
     section_id: readSectionSelect("h"),
-    due_mode: due.due_mode,
-    recurrence_days: due.recurrence_days,
-    reminder_lead_days: due.reminder_lead_days,
     sort_order: habits.length,
-  }).select().single();
+  };
+  if (newHabitType === "buys") {
+    Object.assign(row, { due_mode: "none", recurrence_days: null, reminder_lead_days: 0 }, readBuysFields("h"));
+  } else {
+    const due = readDueControl("h");
+    Object.assign(row, { due_mode: due.due_mode, recurrence_days: due.recurrence_days, reminder_lead_days: due.reminder_lead_days });
+  }
+  const { data, error } = await db.from("habits").insert(row).select().single();
   if (error) return alert(error.message);
+
+  // Photo upload waits until the row exists (its id is part of the storage path).
+  const file = newHabitType === "buys" && $("h-photo") && $("h-photo").files[0];
+  if (file) {
+    try {
+      const path = await uploadHabitPhoto(data.id, file);
+      const { error: pe } = await db.from("habits").update({ photo_path: path }).eq("id", data.id);
+      if (!pe) data.photo_path = path;
+    } catch (err) { alert(err.message || "Item saved, but the photo didn't upload — add it from the item's screen."); }
+  }
+
   habits.push(data);
   $("habit-form").reset();
   $("h-emoji").value = "✅";
@@ -1857,6 +2038,7 @@ document.addEventListener("keydown", (e) => {
   else if ($("suggest-screen")) closeSuggestions();
   else if (screenHabitId) closeHabitScreen();
   else if (!$("modal").classList.contains("hidden")) { $("modal").classList.add("hidden"); $("habit-form").reset(); }
+  else if (!$("type-modal").classList.contains("hidden")) $("type-modal").classList.add("hidden");
 });
 
 /* ---------- Boot ---------- */
