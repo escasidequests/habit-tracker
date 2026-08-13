@@ -83,7 +83,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "32";
+const APP_BUILD = "33";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -102,6 +102,8 @@ let showHidden = false;
 let reorderMode = false;
 let newHabitColor = null;  // color chosen in the add-habit form
 let newHabitType = "build"; // type chosen in step 1 of the add flow
+let newHabitPhotoBlob = null; // cropped photo staged in the add form, uploaded after insert
+let hsPhotoBlob = null;       // cropped photo staged on the habit screen, uploaded on Save
 
 /* ---------- Auth ---------- */
 
@@ -441,7 +443,8 @@ function buysFieldsHtml(prefix, h) {
   const date = h && h.date_purchased ? h.date_purchased : "";
   const desc = h && h.description ? h.description : "";
   const current = h && h.photo_path
-    ? `<img class="buys-photo edit" data-photo="${h.id}" alt="current photo" />`
+    ? `<img class="buys-photo edit" data-photo="${h.id}" alt="current photo" />
+       <button type="button" id="${prefix}-recrop" class="secondary">Crop photo</button>`
     : "";
   return `
     <label>Price <input id="${prefix}-price" type="number" min="0" step="0.01" inputmode="decimal" value="${price}" placeholder="0.00" /></label>
@@ -458,6 +461,20 @@ function readBuysFields(prefix) {
     date_purchased: $(`${prefix}-purchased`).value || null,
     description: $(`${prefix}-desc`).value.trim() || null,
   };
+}
+
+// Picking a photo opens the square cropper; the cropped blob is handed to onBlob
+// (staged for upload). Cancelling the crop clears the file selection.
+function wireBuysPhotoInput(prefix, onBlob) {
+  const input = $(`${prefix}-photo`);
+  if (!input) return;
+  input.addEventListener("change", async () => {
+    const file = input.files[0];
+    if (!file) return;
+    const cropped = await openCropper(file);
+    if (cropped) onBlob(cropped);
+    else { input.value = ""; onBlob(null); }
+  });
 }
 
 // Shrink a photo in the browser before upload: cap the longest side at ~1000px and
@@ -488,7 +505,105 @@ async function uploadHabitPhoto(habitId, file) {
   const { error } = await db.storage.from("habit-photos")
     .upload(path, blob, { upsert: true, contentType: "image/jpeg" });
   if (error) throw error;
+  photoUrlCache.delete(path); // stored bytes changed at this path — force a fresh signed URL
   return path;
+}
+
+// Download an existing private photo as a Blob (for re-cropping). Fetching the signed
+// URL into a same-origin blob avoids canvas cross-origin tainting.
+async function fetchPhotoBlob(path) {
+  const { data, error } = await db.storage.from("habit-photos").createSignedUrl(path, 3600);
+  if (error || !data) return null;
+  try {
+    const res = await fetch(data.signedUrl);
+    return res.ok ? await res.blob() : null;
+  } catch (_) { return null; }
+}
+
+// Square pan-and-zoom cropper. Shows `blob` in a fixed square frame; drag to pan,
+// slider to zoom. Resolves with a cropped square JPEG Blob, or null if cancelled.
+function openCropper(blob, out = 1000) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.onload = () => {
+      const V = 288; // on-screen frame size
+      let zoom = 1, offX = 0, offY = 0;
+      const coverScale = V / Math.min(img.width, img.height); // fills the square at zoom 1
+
+      const overlay = document.createElement("div");
+      overlay.id = "cropper";
+      overlay.className = "popover show";
+      overlay.innerHTML = `
+        <div class="popover-card cropper-card">
+          <div class="popover-title">Crop photo</div>
+          <canvas class="crop-canvas" width="${V}" height="${V}"></canvas>
+          <label class="crop-zoom">Zoom
+            <input type="range" min="1" max="3" step="0.01" value="1" />
+          </label>
+          <div class="row">
+            <button data-act="cancel" class="ghost">Cancel</button>
+            <button data-act="use">Use photo</button>
+          </div>
+        </div>`;
+      const canvas = overlay.querySelector(".crop-canvas");
+      const ctx = canvas.getContext("2d");
+      const range = overlay.querySelector('input[type="range"]');
+
+      const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+      const draw = () => {
+        const scale = coverScale * zoom;
+        const dw = img.width * scale, dh = img.height * scale;
+        offX = clamp(offX, V - dw, 0);
+        offY = clamp(offY, V - dh, 0);
+        ctx.clearRect(0, 0, V, V);
+        ctx.drawImage(img, offX, offY, dw, dh);
+      };
+      // center initially
+      offX = (V - img.width * coverScale) / 2;
+      offY = (V - img.height * coverScale) / 2;
+      draw();
+
+      range.addEventListener("input", () => {
+        const oldScale = coverScale * zoom;
+        zoom = Number(range.value);
+        const newScale = coverScale * zoom;
+        // keep the frame's center anchored while zooming
+        const cx = (V / 2 - offX) / oldScale, cy = (V / 2 - offY) / oldScale;
+        offX = V / 2 - cx * newScale;
+        offY = V / 2 - cy * newScale;
+        draw();
+      });
+
+      let panning = false, lastX = 0, lastY = 0;
+      canvas.addEventListener("pointerdown", (e) => {
+        panning = true; lastX = e.clientX; lastY = e.clientY;
+        canvas.setPointerCapture(e.pointerId);
+      });
+      canvas.addEventListener("pointermove", (e) => {
+        if (!panning) return;
+        offX += e.clientX - lastX; offY += e.clientY - lastY;
+        lastX = e.clientX; lastY = e.clientY;
+        draw();
+      });
+      const endPan = () => { panning = false; };
+      canvas.addEventListener("pointerup", endPan);
+      canvas.addEventListener("pointercancel", endPan);
+
+      const close = (result) => { URL.revokeObjectURL(url); overlay.remove(); resolve(result); };
+      overlay.querySelector('[data-act="cancel"]').addEventListener("click", () => close(null));
+      overlay.querySelector('[data-act="use"]').addEventListener("click", () => {
+        const scale = coverScale * zoom, k = out / V;
+        const oc = document.createElement("canvas");
+        oc.width = out; oc.height = out;
+        oc.getContext("2d").drawImage(img, offX * k, offY * k, img.width * scale * k, img.height * scale * k);
+        oc.toBlob((b) => close(b || null), "image/jpeg", 0.85);
+      });
+      document.body.appendChild(overlay);
+    };
+    img.src = url;
+  });
 }
 
 function sinceText(daysSince) {
@@ -851,6 +966,32 @@ function readSectionSelect(prefix) {
   return v && v !== "__new__" ? v : null;
 }
 
+// Longest clean stretch for a "break" habit, in days — the max of the gaps between
+// consecutive logs AND the current ongoing stretch (days since the last log).
+function longestBreakStretch(habitId) {
+  const list = entriesByHabit[habitId] || [];
+  if (!list.length) return null;
+  const days = list.map((e) => dayIndex(e.at.getTime())).sort((a, b) => a - b);
+  let max = dayIndex(Date.now()) - days[days.length - 1]; // ongoing stretch since last log
+  for (let i = 1; i < days.length; i++) max = Math.max(max, days[i] - days[i - 1]);
+  return max;
+}
+
+// The bottom-right metric on a tile. Most types show total logs ("12×"); "buys"
+// shows cost-per-wear, "break" shows the longest clean stretch.
+function tileMetric(h, count) {
+  if (h.type === "buys") {
+    if (h.price != null && count > 0) return fmtMoney(h.price / count) + "/wr";
+    if (h.price != null) return fmtMoney(h.price);
+    return count + "×";
+  }
+  if (h.type === "break") {
+    const s = longestBreakStretch(h.id);
+    return s == null ? "—" : "best " + s + "d";
+  }
+  return count + "×";
+}
+
 function buildTile(h) {
   const { count, daysSince } = stats(h.id);
   const status = dueStatus(h, daysSince);
@@ -870,7 +1011,7 @@ function buildTile(h) {
     <div class="emoji">${icon}</div>
     <div class="name">${escapeHtml(h.name)}</div>
     <div class="stat">${sinceText(daysSince)}</div>
-    <div class="count">${count}×</div>`;
+    <div class="count">${tileMetric(h, count)}</div>`;
   // The <img> is in place now but not yet in the DOM; load its signed URL once the
   // tile has been appended (after this synchronous render pass).
   if (h.type === "buys" && h.photo_path) queueMicrotask(() => loadHabitPhoto(h.id, h.photo_path));
@@ -1115,8 +1256,26 @@ function renderHabitScreen() {
   panel.querySelector('[data-act="back"]').addEventListener("click", closeHabitScreen);
 
   const getColor = renderSwatches(panel.querySelector("#hs-color"), h.color, null);
-  if (h.type === "buys") loadHabitPhoto(h.id, h.photo_path);
-  else wireDueControl("hs"); // buys has no due control to wire
+  if (h.type === "buys") {
+    loadHabitPhoto(h.id, h.photo_path);
+    hsPhotoBlob = null;
+    wireBuysPhotoInput("hs", (b) => { hsPhotoBlob = b; });
+    // "Crop photo" re-crops the existing stored photo and uploads immediately.
+    const recrop = $("hs-recrop");
+    if (recrop) recrop.addEventListener("click", async () => {
+      const blob = await fetchPhotoBlob(h.photo_path);
+      if (!blob) return alert("Couldn't load the photo to crop.");
+      const cropped = await openCropper(blob);
+      if (!cropped) return;
+      try {
+        h.photo_path = await uploadHabitPhoto(h.id, cropped);
+        await db.from("habits").update({ photo_path: h.photo_path }).eq("id", h.id);
+        renderHabitScreen(); render(); flashSuccess();
+      } catch (err) { alert(err.message || "Couldn't save the cropped photo."); }
+    });
+  } else {
+    wireDueControl("hs"); // buys has no due control to wire
+  }
   wireSectionSelect("hs");
   wireEmojiInput(panel.querySelector("#hs-emoji"));
   panel.querySelectorAll("[data-note]").forEach((b) =>
@@ -1178,9 +1337,8 @@ function renderHabitScreen() {
     if (type === "buys") {
       Object.assign(patch, { due_mode: "none", recurrence_days: null, reminder_lead_days: 0 });
       if ($("hs-price")) Object.assign(patch, readBuysFields("hs"));
-      const file = $("hs-photo") && $("hs-photo").files[0];
-      if (file) {
-        try { patch.photo_path = await uploadHabitPhoto(h.id, file); }
+      if (hsPhotoBlob) {
+        try { patch.photo_path = await uploadHabitPhoto(h.id, hsPhotoBlob); hsPhotoBlob = null; }
         catch (e) { return alert(e.message || "Couldn't upload that photo."); }
       }
     } else if ($("hs-recur")) {
@@ -1643,6 +1801,8 @@ function openHabitForm(type) {
   // Buys → price/photo/etc.; every other type → the reminders control.
   if (type === "buys") {
     $("h-extra").innerHTML = buysFieldsHtml("h", null);
+    newHabitPhotoBlob = null;
+    wireBuysPhotoInput("h", (b) => { newHabitPhotoBlob = b; });
   } else {
     $("h-extra").innerHTML = dueControlHtml("h", "none", 7, 0);
     wireDueControl("h");
@@ -1745,16 +1905,16 @@ $("habit-form").addEventListener("submit", async (e) => {
   if (error) return alert(error.message);
 
   // Photo upload waits until the row exists (its id is part of the storage path).
-  const file = newHabitType === "buys" && $("h-photo") && $("h-photo").files[0];
-  if (file) {
+  if (newHabitType === "buys" && newHabitPhotoBlob) {
     try {
-      const path = await uploadHabitPhoto(data.id, file);
+      const path = await uploadHabitPhoto(data.id, newHabitPhotoBlob);
       const { error: pe } = await db.from("habits").update({ photo_path: path }).eq("id", data.id);
       if (!pe) data.photo_path = path;
     } catch (err) { alert(err.message || "Item saved, but the photo didn't upload — add it from the item's screen."); }
   }
 
   habits.push(data);
+  newHabitPhotoBlob = null;
   $("habit-form").reset();
   $("h-emoji").value = "✅";
   $("modal").classList.add("hidden");
@@ -1841,16 +2001,17 @@ function renderSettingsScreen() {
 }
 
 // Drag the rows in the Settings "Tab order" list; on drop, save + update the tab bar.
+// The whole row is the drag target (its children are pointer-events:none), so the
+// touch lands on an element with touch-action:none and isn't swallowed as a scroll.
 function wireTabReorder(container) {
   if (!container) return;
   let drag = null;
   container.querySelectorAll(".tab-row").forEach((row) => {
-    const handle = row.querySelector(".tab-drag");
-    handle.addEventListener("pointerdown", (e) => {
+    row.addEventListener("pointerdown", (e) => {
       if (e.button && e.button !== 0) return;
       drag = row;
       row.classList.add("dragging");
-      handle.setPointerCapture(e.pointerId);
+      row.setPointerCapture(e.pointerId);
       const move = (ev) => {
         const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".tab-row");
         if (!over || over === drag || over.parentElement !== container) return;
@@ -1859,19 +2020,19 @@ function wireTabReorder(container) {
         container.insertBefore(drag, after ? over.nextSibling : over);
       };
       const up = (ev) => {
-        handle.releasePointerCapture(ev.pointerId);
+        row.releasePointerCapture(ev.pointerId);
         row.classList.remove("dragging");
-        handle.removeEventListener("pointermove", move);
-        handle.removeEventListener("pointerup", up);
-        handle.removeEventListener("pointercancel", up);
+        row.removeEventListener("pointermove", move);
+        row.removeEventListener("pointerup", up);
+        row.removeEventListener("pointercancel", up);
         drag = null;
         const keys = Array.from(container.querySelectorAll(".tab-row")).map((r) => r.dataset.key);
         saveTabOrder(keys);
         renderTabs();
       };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", up);
-      handle.addEventListener("pointercancel", up);
+      row.addEventListener("pointermove", move);
+      row.addEventListener("pointerup", up);
+      row.addEventListener("pointercancel", up);
     });
   });
 }
@@ -2123,7 +2284,8 @@ function urlB64ToUint8Array(base64) {
 // Escape closes the popup first, then the habit screen.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if ($("emoji-picker")) $("emoji-picker").remove();
+  if ($("cropper")) $("cropper").remove();
+  else if ($("emoji-picker")) $("emoji-picker").remove();
   else if ($("log-sheet")) $("log-sheet").remove();
   else if ($("note-editor")) $("note-editor").remove();
   else if ($("tile-menu")) closeTileMenu();

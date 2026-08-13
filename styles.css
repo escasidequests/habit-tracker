@@ -432,5 +432,12 @@ button:disabled { opacity: .5; cursor: default; }
   border-radius: 9px; padding: 10px 12px; touch-action: none; user-select: none;
 }
 .tab-row.dragging { opacity: .6; }
-.tab-row .tab-drag { cursor: grab; color: var(--muted); font-size: 16px; }
-.tab-row .tab-label { font-size: 14px; font-weight: 600; }
+.tab-row .tab-drag { cursor: grab; color: var(--muted); font-size: 16px; pointer-events: none; }
+.tab-row .tab-label { font-size: 14px; font-weight: 600; pointer-events: none; }
+
+/* ---- Photo cropper ---- */
+.cropper-card { align-items: center; }
+.crop-canvas { width: 288px; height: 288px; border-radius: 12px; background: var(--card-2); touch-action: none; cursor: grab; }
+.crop-canvas:active { cursor: grabbing; }
+.crop-zoom { width: 288px; display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
+.crop-zoom input[type="range"] { flex: 1; }
