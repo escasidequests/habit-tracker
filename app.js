@@ -83,7 +83,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "31";
+const APP_BUILD = "32";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -96,6 +96,7 @@ let sections = [];       // user-defined home-screen groups: [{id, name, sort_or
 // session-local).
 let sortMode = "manual";   // manual | activity | created | alpha
 let dayStartHour = 0;      // 0-11; when a new "day" begins for calendar-day counts
+let tabOrder = null;       // saved order of the reorderable tabs (keys, "due" excluded); null = default
 let searchTerm = "";
 let showHidden = false;
 let reorderMode = false;
@@ -236,9 +237,10 @@ async function loadAndRender() {
 // Cross-device UI preferences (currently just the sort mode).
 async function loadPrefs() {
   try {
-    const { data } = await db.from("user_prefs").select("sort_mode, day_start_hour").maybeSingle();
+    const { data } = await db.from("user_prefs").select("sort_mode, day_start_hour, tab_order").maybeSingle();
     if (data?.sort_mode) sortMode = data.sort_mode;
     if (data && data.day_start_hour != null) dayStartHour = data.day_start_hour;
+    if (Array.isArray(data?.tab_order)) tabOrder = data.tab_order;
   } catch (_) { /* table/column may not exist yet — keep the defaults */ }
 }
 
@@ -260,6 +262,34 @@ async function saveDayStartHour(hour) {
       { user_id: u.user.id, day_start_hour: hour, updated_at: new Date().toISOString() },
       { onConflict: "user_id" });
   } catch (err) { console.warn("Couldn't save day-start preference:", err.message); }
+}
+
+async function saveTabOrder(keys) {
+  tabOrder = keys;
+  try {
+    const { data: u } = await db.auth.getUser();
+    await db.from("user_prefs").upsert(
+      { user_id: u.user.id, tab_order: keys, updated_at: new Date().toISOString() },
+      { onConflict: "user_id" });
+  } catch (err) { console.warn("Couldn't save tab order:", err.message); }
+}
+
+// The reorderable tab keys ("due" excluded, it's always pinned first), honoring the
+// saved order and appending any tab types added since it was saved.
+function reorderableKeys() {
+  const base = VIEWS.filter((v) => v.key !== "due").map((v) => v.key);
+  if (!tabOrder) return base;
+  const known = new Set(base);
+  const ordered = tabOrder.filter((k) => known.has(k));
+  for (const k of base) if (!ordered.includes(k)) ordered.push(k);
+  return ordered;
+}
+
+// VIEWS in display order: "Due" first, then the user's tab order.
+function orderedViews() {
+  const due = VIEWS.find((v) => v.key === "due");
+  const rest = reorderableKeys().map((k) => VIEWS.find((v) => v.key === k)).filter(Boolean);
+  return due ? [due, ...rest] : rest;
 }
 
 // Calendar-day number for a timestamp (ms), honoring the user's day-start hour.
@@ -387,13 +417,21 @@ function buildBuysCard(h) {
 }
 
 // Fetch a short-lived signed URL for a private photo and drop it into every <img>
-// that references it (the card + the edit-form preview).
+// that references it (home tile, card, edit-form preview). URLs are cached by path
+// so re-renders (which re-run this per visible tile) don't refetch each time.
+const photoUrlCache = new Map(); // path -> { url, exp }
 async function loadHabitPhoto(habitId, path) {
   if (!path) return;
   const imgs = document.querySelectorAll(`img[data-photo="${habitId}"]`);
   if (!imgs.length) return;
-  const { data, error } = await db.storage.from("habit-photos").createSignedUrl(path, 3600);
-  if (!error && data) imgs.forEach((img) => (img.src = data.signedUrl));
+  let entry = photoUrlCache.get(path);
+  if (!entry || entry.exp < Date.now() + 60000) { // refresh if missing or within 1 min of expiry
+    const { data, error } = await db.storage.from("habit-photos").createSignedUrl(path, 3600);
+    if (error || !data) return;
+    entry = { url: data.signedUrl, exp: Date.now() + 3600 * 1000 };
+    photoUrlCache.set(path, entry);
+  }
+  imgs.forEach((img) => (img.src = entry.url));
 }
 
 // The price/date/description/photo inputs for a "buys" item — shared by the add
@@ -608,7 +646,7 @@ function renderTabs() {
   const nav = $("tabs");
   nav.innerHTML = "";
   const dueCount = habits.filter((h) => isActive(h, stats(h.id).daysSince)).length;
-  for (const v of VIEWS) {
+  for (const v of orderedViews()) {
     const btn = document.createElement("button");
     btn.className = "tab" + (v.key === currentView ? " active" : "");
     btn.innerHTML = escapeHtml(v.label) +
@@ -822,13 +860,20 @@ function buildTile(h) {
   tile.dataset.habitId = h.id;
   tile.style.setProperty("--type", habitColor(h));
   const flags = (h.pinned ? "📌" : "") + (h.paused ? "⏸" : "");
+  // Buys items with a photo show a square thumbnail in place of the emoji.
+  const icon = (h.type === "buys" && h.photo_path)
+    ? `<img class="tile-thumb" data-photo="${h.id}" alt="" />`
+    : h.emoji;
   tile.innerHTML = `
     <span class="due-badge">${status === "soon" ? "SOON" : "DUE"}</span>
     ${flags ? `<span class="tile-flags">${flags}</span>` : ""}
-    <div class="emoji">${h.emoji}</div>
+    <div class="emoji">${icon}</div>
     <div class="name">${escapeHtml(h.name)}</div>
     <div class="stat">${sinceText(daysSince)}</div>
     <div class="count">${count}×</div>`;
+  // The <img> is in place now but not yet in the DOM; load its signed URL once the
+  // tile has been appended (after this synchronous render pass).
+  if (h.type === "buys" && h.photo_path) queueMicrotask(() => loadHabitPhoto(h.id, h.photo_path));
   // In reorder mode, tiles are only drag-sortable under manual sort (otherwise the
   // visible order is computed, so dragging couldn't stick). Sections still reorder.
   if (reorderMode && sortMode === "manual") attachReorderGestures(tile);
@@ -1520,6 +1565,7 @@ const EMOJI_PICKER = {
   "Food & drink": ["💧", "☕", "🍵", "🍺", "🍷", "🥂", "🍸", "🥤", "🧋", "🍭", "🍫", "🍔", "🍕", "🍟", "🌮", "🍜", "🥗", "🍎", "🥦", "🥕", "🚬"],
   "People": ["🤙", "📞", "💬", "📨", "👋", "🧑‍🤝‍🧑", "👵", "👴", "❤️", "🎉", "🍽️", "🎂", "💌", "🤝", "💍"],
   "Life": ["💰", "💵", "🛒", "📱", "📵", "⏰", "📅", "🌱", "✅", "⭐", "🔥", "🏆", "🎁", "🐶", "🐱", "🌞", "🌙", "🚗", "✈️", "🧾", "🎧", "📷"],
+  "Wardrobe": ["👕", "👔", "👖", "👗", "👚", "🧥", "🧦", "🧣", "🧤", "🧢", "🎩", "👒", "🩳", "🩱", "👙", "👘", "🥻", "👞", "👟", "👠", "👡", "👢", "🥾", "👜", "👛", "👝", "🎒", "🕶️", "👓", "💍", "⌚", "📿", "💄", "👑"],
 };
 
 // Turn an emoji <input> into a picker trigger: read-only (so the text keyboard
@@ -1588,7 +1634,7 @@ function openHabitForm(type) {
   const label = (TYPES.find((t) => t.key === type) || {}).label || "habit";
   $("type-modal").classList.add("hidden");
   $("habit-form").reset();
-  $("h-emoji").value = "✅";
+  $("h-emoji").value = type === "buys" ? "🛍️" : "✅";
   $("h-title").textContent = `New ${label}`;
   wireEmojiInput($("h-emoji"));
   renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
@@ -1759,6 +1805,17 @@ function renderSettingsScreen() {
         </label>
       </section>
       <section class="card-section">
+        <h3>Tab order</h3>
+        <p class="hint" style="margin:0">Drag to reorder your tabs. “Due” always stays first.</p>
+        <div id="tab-reorder" class="tab-reorder">
+          ${orderedViews().filter((v) => v.key !== "due").map((v) => `
+            <div class="tab-row" data-key="${v.key}">
+              <span class="tab-drag" title="Drag to reorder">⠿</span>
+              <span class="tab-label">${escapeHtml(v.label)}</span>
+            </div>`).join("")}
+        </div>
+      </section>
+      <section class="card-section">
         <h3>Your data</h3>
         <p class="hint" style="margin:0">${habitCount} habit${habitCount === 1 ? "" : "s"} · ${logCount} log${logCount === 1 ? "" : "s"}. Export a copy anytime — it's yours.</p>
         <button class="wide" data-act="json">⬇︎ Export JSON (full backup)</button>
@@ -1780,6 +1837,43 @@ function renderSettingsScreen() {
   });
   panel.querySelector('[data-act="json"]').addEventListener("click", exportJSON);
   panel.querySelector('[data-act="csv"]').addEventListener("click", exportCSV);
+  wireTabReorder($("tab-reorder"));
+}
+
+// Drag the rows in the Settings "Tab order" list; on drop, save + update the tab bar.
+function wireTabReorder(container) {
+  if (!container) return;
+  let drag = null;
+  container.querySelectorAll(".tab-row").forEach((row) => {
+    const handle = row.querySelector(".tab-drag");
+    handle.addEventListener("pointerdown", (e) => {
+      if (e.button && e.button !== 0) return;
+      drag = row;
+      row.classList.add("dragging");
+      handle.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".tab-row");
+        if (!over || over === drag || over.parentElement !== container) return;
+        const r = over.getBoundingClientRect();
+        const after = (ev.clientY - r.top) > r.height / 2;
+        container.insertBefore(drag, after ? over.nextSibling : over);
+      };
+      const up = (ev) => {
+        handle.releasePointerCapture(ev.pointerId);
+        row.classList.remove("dragging");
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        handle.removeEventListener("pointercancel", up);
+        drag = null;
+        const keys = Array.from(container.querySelectorAll(".tab-row")).map((r) => r.dataset.key);
+        saveTabOrder(keys);
+        renderTabs();
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+      handle.addEventListener("pointercancel", up);
+    });
+  });
 }
 
 // All logs as flat rows, joined to their habit later.
