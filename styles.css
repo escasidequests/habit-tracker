@@ -9,6 +9,7 @@
   --neutral: #7f8b98;
   --people: #4f8cf5;
   --buys: #a06cd5;
+  --bites: #e0803a;
   --overdue: #f0b429;
   --radius: 14px;
 }
@@ -475,3 +476,16 @@ button:disabled { opacity: .5; cursor: default; }
 .emoji-custom { background: var(--card-2); border-radius: 10px; padding: 10px 12px; gap: 8px; }
 .emoji-custom input { font-size: 20px; text-align: center; }
 .emoji-or { text-align: center; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+
+/* Section reorder arrows (in Reorder mode) */
+.section-arrows { display: flex; gap: 6px; flex: none; }
+.section-arrows button {
+  background: var(--card-2); border: 1px solid #3a4552; color: var(--text);
+  width: auto; font-size: 15px; line-height: 1; padding: 4px 10px; border-radius: 8px; font-weight: 700;
+}
+.section-arrows button:disabled { opacity: .35; }
+
+/* Emoji picker: 2-emoji preview */
+.emoji-preview { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.emoji-preview #emoji-preview { font-size: 30px; line-height: 1; min-height: 34px; }
+.emoji-preview button { width: auto; padding: 4px 10px; font-size: 13px; }

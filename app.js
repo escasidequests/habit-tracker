@@ -9,12 +9,14 @@ const db = supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY);
 //   track — no direction, just keeping tabs
 //   bonds — staying in touch with people (shorter gaps are good)
 //   buys  — an owned item you amortize; each log is one "wear" (cost-per-wear)
+//   bites — meals; like "track" (log each meal), no reminders by default
 const TYPES = [
   { key: "build", label: "Build", color: "var(--good)" },
   { key: "break", label: "Break", color: "var(--bad)" },
   { key: "track", label: "Track", color: "var(--neutral)" },
   { key: "bonds", label: "Bonds", color: "var(--people)" },
   { key: "buys",  label: "Buys",  color: "var(--buys)" },
+  { key: "bites", label: "Bites", color: "var(--bites)" },
 ];
 
 // Type descriptions for the "What are you adding?" picker (step 1 of the add flow).
@@ -24,6 +26,7 @@ const TYPE_DESC = {
   track: "Just keep tabs",
   bonds: "Stay in touch",
   buys:  "Track an item's cost per wear",
+  bites: "Log meals",
 };
 
 // Legacy → new type values, applied on load so the app keeps working during the
@@ -39,6 +42,7 @@ const VIEWS = [
   { key: "break", label: "Break", types: ["break"] },
   { key: "bonds", label: "Bonds", types: ["bonds"] },
   { key: "buys", label: "Buys", types: ["buys"] },
+  { key: "bites", label: "Bites", types: ["bites"] },
 ];
 let currentView = localStorage.getItem("habitView") || "due";
 if (!VIEWS.some((v) => v.key === currentView)) currentView = "due"; // heal a stale saved tab
@@ -69,6 +73,11 @@ const SUGGESTIONS = [
   { emoji: "💬", name: "Text a friend", type: "bonds", days: 7 },
   { emoji: "👋", name: "Reconnect with someone", type: "bonds", days: 30 },
   { emoji: "📨", name: "Check in with sibling", type: "bonds", days: 14 },
+  { emoji: "🍳", name: "Breakfast", type: "bites" },
+  { emoji: "🥗", name: "Lunch", type: "bites" },
+  { emoji: "🍽️", name: "Dinner", type: "bites" },
+  { emoji: "🍎", name: "Snack", type: "bites" },
+  { emoji: "🍰", name: "Dessert", type: "bites" },
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -83,7 +92,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "35";
+const APP_BUILD = "36";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -91,6 +100,7 @@ const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da"
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [{id, at, note}, ...]
 let sections = [];       // user-defined home-screen groups: [{id, name, sort_order, collapsed}, ...]
+let renderedSections = []; // real sections shown in the current tab, in order (for reorder arrows)
 
 // UI state (sort_mode + dayStartHour are synced via user_prefs; the rest are
 // session-local).
@@ -331,7 +341,7 @@ function predictInterval(habitId) {
 
 // Hex equivalents of the type CSS vars — SVG stroke can't resolve var(--x).
 const TYPE_HEX = {
-  build: "#37b26b", break: "#e5533c", track: "#7f8b98", bonds: "#4f8cf5", buys: "#a06cd5",
+  build: "#37b26b", break: "#e5533c", track: "#7f8b98", bonds: "#4f8cf5", buys: "#a06cd5", bites: "#e0803a",
 };
 function trendColor(h) { return h.color || TYPE_HEX[h.type] || "#7f8b98"; }
 
@@ -723,7 +733,7 @@ function render() {
   }
 
   if (reorderMode) {
-    grid.appendChild(hintEl("Drag ⠿ to reorder sections · drag tiles to reorder · tap a section name to rename or delete · Done when finished. (Add a habit to a section from its screen.)"));
+    grid.appendChild(hintEl("Use ↑ ↓ to reorder sections · drag tiles to reorder · tap a section name to rename or delete · Done when finished."));
   }
 
   if (view.key === "due") {
@@ -743,12 +753,12 @@ function render() {
   const bySection = {};
   for (const h of inView) (bySection[h.section_id || "__none__"] ||= []).push(h);
 
-  let any = false;
   const ordered = sections.slice().sort((a, b) => (a.sort_order - b.sort_order) || a.name.localeCompare(b.name));
-  for (const s of ordered) {
-    const list = bySection[s.id];
-    if (list && list.length) { renderSectionGroup(grid, s, sortForGroup(list)); any = true; }
-  }
+  // The real sections actually shown in this tab, in order — reorder arrows move within this list.
+  renderedSections = ordered.filter((s) => bySection[s.id] && bySection[s.id].length);
+  let any = renderedSections.length > 0;
+  renderedSections.forEach((s, idx) =>
+    renderSectionGroup(grid, s, sortForGroup(bySection[s.id]), idx, renderedSections.length));
   const ungrouped = bySection["__none__"];
   if (ungrouped && ungrouped.length) {
     // Only label leftovers "Ungrouped" when there are real sections to contrast with;
@@ -820,8 +830,9 @@ function renderGroup(grid, label, list) {
 // A home-screen section group. `section` is a real row {id, name, collapsed} — or
 // {id: null, name: "Ungrouped"} for the leftovers, or null for a header-less list
 // (when no sections exist yet). Real sections collapse (tap header) and, in reorder
-// mode, drag to reorder (⠿ handle) and rename/delete (tap the name).
-function renderSectionGroup(grid, section, list) {
+// mode, move with ↑/↓ arrows and rename/delete (tap the name). `idx`/`total` place
+// this section within the tab's visible list (for arrow enable/disable).
+function renderSectionGroup(grid, section, list, idx, total) {
   const group = document.createElement("div");
   group.className = "group";
   const isReal = !!(section && section.id); // a persisted section (not Ungrouped/flat)
@@ -832,12 +843,18 @@ function renderSectionGroup(grid, section, list) {
   if (section) {
     const head = document.createElement("div");
     head.className = "section-head";
+    const arrows = reorderMode && isReal
+      ? `<span class="section-arrows">
+           <button class="sec-up"${idx === 0 ? " disabled" : ""} aria-label="Move up">↑</button>
+           <button class="sec-down"${idx === total - 1 ? " disabled" : ""} aria-label="Move down">↓</button>
+         </span>`
+      : "";
     head.innerHTML =
       (isReal ? `<span class="section-toggle">${collapsed ? "▶" : "▼"}</span>` : "") +
       `<h2>${escapeHtml(section.name)}</h2>` +
       `<span class="section-count">${list.length}</span>` +
       (!reorderMode ? `<button class="section-add" title="Add a habit here" aria-label="Add a habit here">＋</button>` : "") +
-      (reorderMode && isReal ? `<span class="section-drag" title="Drag to reorder">⠿</span>` : "");
+      arrows;
     group.appendChild(head);
     const addBtn = head.querySelector(".section-add");
     if (addBtn) addBtn.addEventListener("click", (e) => { e.stopPropagation(); addHabitToSection(section.id || null); });
@@ -846,7 +863,8 @@ function renderSectionGroup(grid, section, list) {
       const name = head.querySelector("h2");
       name.style.cursor = "pointer";
       name.addEventListener("click", () => openSectionMenu(section));
-      attachSectionReorder(head, group);
+      head.querySelector(".sec-up").addEventListener("click", (e) => { e.stopPropagation(); moveSection(section, -1); });
+      head.querySelector(".sec-down").addEventListener("click", (e) => { e.stopPropagation(); moveSection(section, 1); });
     } else if (isReal) {
       head.style.cursor = "pointer";
       head.addEventListener("click", () => toggleSectionCollapse(section));
@@ -860,55 +878,26 @@ function renderSectionGroup(grid, section, list) {
   grid.appendChild(group);
 }
 
+// Move a section up/down among the tab's currently-visible sections by swapping its
+// sort_order with its visible neighbor's, then persist. Renders optimistically.
+async function moveSection(section, dir) {
+  const arr = renderedSections;
+  const i = arr.findIndex((s) => s.id === section.id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= arr.length) return;
+  const a = arr[i], b = arr[j];
+  const tmp = a.sort_order; a.sort_order = b.sort_order; b.sort_order = tmp;
+  render();
+  const r1 = await db.from("sections").update({ sort_order: a.sort_order }).eq("id", a.id);
+  const r2 = await db.from("sections").update({ sort_order: b.sort_order }).eq("id", b.id);
+  if (r1.error || r2.error) alert((r1.error || r2.error).message);
+}
+
 async function toggleSectionCollapse(section) {
   section.collapsed = !section.collapsed;
   render(); // optimistic; persist in the background
   const { error } = await db.from("sections").update({ collapsed: section.collapsed }).eq("id", section.id);
   if (error) console.warn("Couldn't save collapse state:", error.message);
-}
-
-// Drag a section header to reorder sections within the current tab, then persist.
-let dragSection = null;
-function attachSectionReorder(head, group) {
-  head.addEventListener("pointerdown", (e) => {
-    if (e.button && e.button !== 0) return;
-    if (e.target.closest("h2")) return; // tapping the name renames; don't start a drag
-    dragSection = group;
-    group.classList.add("dragging");
-    head.setPointerCapture(e.pointerId);
-    const move = (ev) => {
-      const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".section-group[data-section-id]");
-      if (!over || over === dragSection || over.parentElement !== dragSection.parentElement) return;
-      const r = over.getBoundingClientRect();
-      const after = (ev.clientY - r.top) > r.height / 2;
-      over.parentElement.insertBefore(dragSection, after ? over.nextSibling : over);
-    };
-    const up = (ev) => {
-      head.releasePointerCapture(ev.pointerId);
-      group.classList.remove("dragging");
-      head.removeEventListener("pointermove", move);
-      head.removeEventListener("pointerup", up);
-      head.removeEventListener("pointercancel", up);
-      dragSection = null;
-      persistSectionOrder();
-    };
-    head.addEventListener("pointermove", move);
-    head.addEventListener("pointerup", up);
-    head.addEventListener("pointercancel", up);
-  });
-}
-
-// Renumber sort_order to match the sections' current top-to-bottom order on screen.
-async function persistSectionOrder() {
-  const ids = Array.from(document.querySelectorAll("#grid .section-group[data-section-id]")).map((g) => g.dataset.sectionId);
-  for (let i = 0; i < ids.length; i++) {
-    const s = sections.find((x) => x.id === ids[i]);
-    if (s && s.sort_order !== i) {
-      s.sort_order = i;
-      const { error } = await db.from("sections").update({ sort_order: i }).eq("id", s.id);
-      if (error) { alert(error.message); return; }
-    }
-  }
 }
 
 // Rename / delete popover for a section (opened by tapping its name in reorder mode).
@@ -1392,7 +1381,7 @@ function renderHabitScreen() {
       <section class="card-section">
         <h3>Edit habit</h3>
         <button data-act="save">Save changes</button>
-        <label>Emoji <input id="hs-emoji" maxlength="8" value="${escapeAttr(h.emoji)}" /></label>
+        <label>Emoji <input id="hs-emoji" maxlength="16" value="${escapeAttr(h.emoji)}" /></label>
         <label>Name <input id="hs-name" value="${escapeAttr(h.name)}" /></label>
         <label>Type
           <select id="hs-type">
@@ -1862,7 +1851,7 @@ function updateTile(habitId) {
   const badge = tile.querySelector(".due-badge");
   if (badge) badge.textContent = status === "soon" ? "SOON" : "DUE";
   tile.querySelector(".stat").textContent = sinceText(daysSince);
-  tile.querySelector(".count").textContent = `${count}×`;
+  tile.querySelector(".count").textContent = tileMetric(h, count);
 }
 
 // Big centered checkmark that pops in and fades — used to confirm a save.
@@ -1902,10 +1891,15 @@ function hideToast() {
 // so we bring our own: tapping an emoji field opens this curated grid. The "type
 // your own" box inside covers anything not listed.
 const EMOJI_PICKER = {
-  "Activity": ["🏋️", "🧘", "🚶", "🏃", "🚴", "🏊", "🧗", "🤸", "🥊", "⚽", "🏀", "🎾", "🎯", "🎮", "🎨", "🎸", "🎹", "📖", "✍️", "🧠", "💻", "🧹", "🛁", "🦷", "💊", "💤"],
-  "Food & drink": ["💧", "☕", "🍵", "🍺", "🍷", "🥂", "🍸", "🥤", "🧋", "🍭", "🍫", "🍔", "🍕", "🍟", "🌮", "🍜", "🥗", "🍎", "🥦", "🥕", "🚬"],
-  "People": ["🤙", "📞", "💬", "📨", "👋", "🧑‍🤝‍🧑", "👵", "👴", "❤️", "🎉", "🍽️", "🎂", "💌", "🤝", "💍"],
-  "Life": ["💰", "💵", "🛒", "📱", "📵", "⏰", "📅", "🌱", "✅", "⭐", "🔥", "🏆", "🎁", "🐶", "🐱", "🌞", "🌙", "🚗", "✈️", "🧾", "🎧", "📷"],
+  "Smileys": ["😀", "😃", "😄", "😁", "😆", "😅", "😂", "🙂", "🙃", "😉", "😊", "😇", "🥰", "😍", "😘", "😋", "😛", "🤪", "😎", "🤩", "🥳", "😏", "😔", "😴", "🤒", "🤕", "🤢", "🥶", "🥵", "😱", "😭", "😡", "🤔", "🤨", "😐", "🙄", "😬", "🤯", "😳", "🥺"],
+  "Activity": ["🏋️", "🧘", "🚶", "🏃", "🚴", "🏊", "🧗", "🤸", "🥊", "⚽", "🏀", "🏈", "⚾", "🎾", "🏐", "🏓", "🏸", "🥏", "🎯", "🎳", "🎮", "🕹️", "🎲", "♟️", "🎨", "🎭", "🎸", "🎹", "🥁", "🎺", "🎻", "🎤", "🎧", "📖", "✍️", "🧠", "💻", "🧹", "🛁", "🦷", "💊", "💤", "🏕️", "🎣", "🏄", "🛹", "⛷️", "🏂"],
+  "Food & drink": ["💧", "☕", "🍵", "🧃", "🥤", "🧋", "🍺", "🍷", "🥂", "🍸", "🍹", "🍳", "🥞", "🧇", "🥓", "🥐", "🥯", "🍞", "🧀", "🥗", "🌮", "🌯", "🥙", "🥪", "🍔", "🍟", "🍕", "🌭", "🍝", "🍜", "🍲", "🍣", "🍱", "🍛", "🍚", "🥟", "🍤", "🍗", "🥩", "🍎", "🍌", "🍓", "🫐", "🍇", "🍉", "🍊", "🥭", "🍑", "🍒", "🥑", "🥦", "🥕", "🌽", "🍫", "🍭", "🍩", "🍪", "🎂", "🍰", "🧁", "🍦"],
+  "People": ["🤙", "📞", "💬", "📨", "👋", "🧑‍🤝‍🧑", "👶", "🧑", "👩", "👨", "👵", "👴", "❤️", "🎉", "🍽️", "🎂", "💌", "🤝", "💍", "👪", "🫂"],
+  "Animals & nature": ["🐶", "🐱", "🐰", "🐹", "🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐔", "🐧", "🐦", "🦉", "🐢", "🐠", "🐬", "🐝", "🦋", "🐞", "🌲", "🌳", "🌴", "🌵", "🌿", "🍀", "🌸", "🌻", "🌷", "🌹", "🍁", "🍄", "🌊", "🌈", "⚡", "❄️", "🌞", "🌙"],
+  "Travel & places": ["🚗", "🚕", "🚌", "🚆", "🚄", "🚲", "🛴", "🛵", "🏍️", "✈️", "🚁", "🚀", "⛵", "🚢", "🗺️", "🧭", "🏠", "🏡", "🏢", "🏨", "🏰", "⛺", "🏖️", "🏝️", "⛰️", "🌉", "🎡", "🎢"],
+  "Objects": ["📱", "💻", "⌨️", "🖥️", "📷", "📸", "🎥", "📺", "☎️", "🔋", "🔌", "💡", "🔦", "🕯️", "🧰", "🔧", "🔨", "🧲", "🧪", "🔬", "🔭", "📡", "💉", "🩹", "🛏️", "🚪", "🪑", "🚿", "🧴", "🧵", "🧶", "🔑", "🧺", "🪥", "📚", "🎧", "📷"],
+  "Symbols": ["❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍", "💔", "❣️", "💕", "💖", "✨", "⭐", "🌟", "💫", "🔥", "💥", "✅", "❌", "❓", "❗", "➕", "➖", "☑️", "🔒", "🔔", "♻️", "⚠️", "🚫", "💯", "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "⚫", "⚪"],
+  "Life": ["💰", "💵", "💳", "🛒", "📱", "📵", "⏰", "⏳", "📅", "🗓️", "🌱", "✅", "⭐", "🔥", "🏆", "🥇", "🎁", "🎈", "🧾", "🎧", "📷", "📚", "🔑", "💡", "🚬"],
   "Wardrobe": ["👕", "👔", "👖", "👗", "👚", "🧥", "🧦", "🧣", "🧤", "🧢", "🎩", "👒", "🩳", "🩱", "👙", "👘", "🥻", "👞", "👟", "👠", "👡", "👢", "🥾", "👜", "👛", "👝", "🎒", "🕶️", "👓", "💍", "⌚", "📿", "💄", "👑"],
 };
 
@@ -1919,6 +1913,20 @@ function wireEmojiInput(input) {
   input.addEventListener("click", () => openEmojiPicker(input));
 }
 
+// Split a string into grapheme clusters, so a single flag/ZWJ emoji counts as one.
+function graphemes(str) {
+  if (typeof Intl !== "undefined" && Intl.Segmenter) {
+    return Array.from(new Intl.Segmenter().segment(str), (s) => s.segment);
+  }
+  return Array.from(str); // fallback: split by code point
+}
+// Keep at most `n` emoji clusters.
+function clampEmojis(str, n = 2) {
+  return graphemes((str || "").trim()).slice(0, n).join("");
+}
+
+// Habits can hold up to 2 emojis. Tap grid emojis to build a 1–2 combo (a 3rd tap
+// starts over), or type/paste your own. Live preview; the field updates as you go.
 function openEmojiPicker(input) {
   const overlay = document.createElement("div");
   overlay.id = "emoji-picker";
@@ -1928,20 +1936,34 @@ function openEmojiPicker(input) {
      <div class="emoji-grid">${list.map((e) => `<button type="button" class="emoji-opt">${e}</button>`).join("")}</div>`).join("");
   overlay.innerHTML = `
     <div class="popover-card emoji-card">
-      <div class="popover-title">Pick an emoji</div>
+      <div class="popover-title">Pick up to 2 emojis</div>
+      <div class="emoji-preview"><span id="emoji-preview"></span>
+        <button data-act="clear" type="button" class="ghost">Clear</button></div>
       <label class="emoji-custom">Type or paste your own
-        <input type="text" id="emoji-custom-in" maxlength="8" value="${escapeAttr(input.value)}" placeholder="e.g. 🧣" />
+        <input type="text" id="emoji-custom-in" maxlength="20" value="${escapeAttr(input.value)}" placeholder="e.g. 🧣" />
       </label>
-      <div class="emoji-or">or pick one</div>
+      <div class="emoji-or">or tap below (up to two)</div>
       <div class="emoji-scroll">${cats}</div>
       <button data-act="done">Done</button>
     </div>`;
   const close = () => overlay.remove();
+  const preview = overlay.querySelector("#emoji-preview");
+  const custom = overlay.querySelector("#emoji-custom-in");
+  const setSel = (v) => {
+    const val = clampEmojis(v, 2);
+    input.value = val;
+    preview.textContent = val || "—";
+    if (custom.value !== val) custom.value = val;
+  };
+  setSel(input.value);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   overlay.querySelectorAll(".emoji-opt").forEach((b) =>
-    b.addEventListener("click", () => { input.value = b.textContent; close(); }));
-  const custom = overlay.querySelector("#emoji-custom-in");
-  custom.addEventListener("input", () => { const v = custom.value.trim(); if (v) input.value = v; });
+    b.addEventListener("click", () => {
+      // A 3rd tap starts a fresh single emoji; otherwise append.
+      setSel(graphemes(input.value).length >= 2 ? b.textContent : input.value + b.textContent);
+    }));
+  custom.addEventListener("input", () => setSel(custom.value));
+  overlay.querySelector('[data-act="clear"]').addEventListener("click", () => setSel(""));
   overlay.querySelector('[data-act="done"]').addEventListener("click", close);
   document.body.appendChild(overlay);
 }
@@ -1949,7 +1971,7 @@ function openEmojiPicker(input) {
 /* ---------- Add habit modal ---------- */
 
 // Big emoji for each type on the step-1 "What are you adding?" picker.
-const TYPE_EMOJI = { build: "🌱", break: "🚫", track: "📋", bonds: "🤝", buys: "🛍️" };
+const TYPE_EMOJI = { build: "🌱", break: "🚫", track: "📋", bonds: "🤝", buys: "🛍️", bites: "🍽️" };
 
 // Step 1: "+ Habit" opens a type picker; choosing a type opens the step-2 form.
 $("add-habit").addEventListener("click", () => { newHabitSection = null; openTypePicker(); });
@@ -1990,7 +2012,7 @@ function openHabitForm(type) {
   const label = (TYPES.find((t) => t.key === type) || {}).label || "habit";
   $("type-modal").classList.add("hidden");
   $("habit-form").reset();
-  $("h-emoji").value = type === "buys" ? "🛍️" : "✅";
+  $("h-emoji").value = (type === "buys" || type === "bites") ? TYPE_EMOJI[type] : "✅";
   $("h-title").textContent = `New ${label}`;
   wireEmojiInput($("h-emoji"));
   renderSwatches($("h-color"), null, (c) => { newHabitColor = c; });
