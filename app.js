@@ -92,7 +92,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "36";
+const APP_BUILD = "37";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -1139,6 +1139,7 @@ function openTileMenu(h, tile) {
   overlay.innerHTML = `
     <div class="popover-card">
       <div class="popover-title">${h.emoji} ${escapeHtml(h.name)}</div>
+      <button data-act="details" class="secondary">📋 Habit Details</button>
       <button data-act="pin" class="secondary">${h.pinned ? "📌 Unpin" : "📌 Pin to top"}</button>
       <button data-act="pausehide" class="secondary">${(h.paused && h.hidden) ? "▶️ Resume & show" : "⏸ Pause & hide"}</button>
       <button data-act="category" class="secondary">🗂 Move to section…</button>
@@ -1146,6 +1147,7 @@ function openTileMenu(h, tile) {
       <button data-act="cancel" class="ghost">Cancel</button>
     </div>`;
   overlay.addEventListener("click", (e) => { if (e.target === overlay) closeTileMenu(); });
+  overlay.querySelector('[data-act="details"]').addEventListener("click", () => { closeTileMenu(); openHabitScreen(h.id); });
   overlay.querySelector('[data-act="pin"]').addEventListener("click", () => { closeTileMenu(); togglePin(h); });
   overlay.querySelector('[data-act="pausehide"]').addEventListener("click", () => { closeTileMenu(); togglePauseHide(h); });
   overlay.querySelector('[data-act="category"]').addEventListener("click", () => { closeTileMenu(); openSectionPicker(h); });
@@ -1766,7 +1768,7 @@ function openLogSheet(h, tile) {
   overlay.innerHTML = `
     <div class="popover-card">
       <div class="popover-title">${h.emoji} ${escapeHtml(h.name)}</div>
-      <button data-act="screen" class="secondary">📋 Habit screen</button>
+      <button data-act="screen" class="secondary">📋 Habit Details</button>
       <label>When?
         <input type="datetime-local" id="log-when" value="${toLocalInputValue(new Date())}" />
       </label>
