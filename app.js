@@ -47,6 +47,16 @@ const VIEWS = [
 let currentView = localStorage.getItem("habitView") || "due";
 if (!VIEWS.some((v) => v.key === currentView)) currentView = "due"; // heal a stale saved tab
 
+// Time ranges for the Bites meal calendar (per-habit screen + Bites tab). The
+// selected range is shared across both places and persisted.
+const CAL_RANGES = [
+  { key: "week", label: "Week", days: 7 },
+  { key: "month", label: "Month", days: 30 },
+  { key: "3mo", label: "3 Months", days: 90 },
+];
+let bitesCalRange = localStorage.getItem("bitesCalRange") || "week";
+if (!CAL_RANGES.some((r) => r.key === bitesCalRange)) bitesCalRange = "week";
+
 // Curated starter habits. `days` (when present) pre-fills a reminder threshold;
 // bad/neutral habits omit it since a "days since" nudge doesn't fit them.
 const SUGGESTIONS = [
@@ -92,7 +102,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "37";
+const APP_BUILD = "40";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -391,6 +401,83 @@ function buildTrend(h) {
       ${cfg.caption ? `<p class="hint" style="margin:0">${cfg.caption}</p>` : ""}`;
   }
   return `<section class="card-section"><h3>${cfg.title}</h3>${body}</section>`;
+}
+
+/* ---------- "Bites" meal calendar (used instead of the trend chart) ---------- */
+
+// Fraction (0..1) of the way through the day a timestamp falls, honoring the
+// user's day-start hour so the top of a column is "day start", bottom is "day end".
+function timeOfDayFrac(at) {
+  const localMs = ((at.getHours() * 60 + at.getMinutes()) * 60 + at.getSeconds()) * 1000;
+  return ((((localMs - dayStartHour * 3600000) % DAY) + DAY) % DAY) / DAY;
+}
+
+// A calendar strip of what was logged per day over the selected range. Each day is
+// a column; each log is an emoji placed vertically by time of day (top = earlier,
+// bottom = later) — no clock times shown. `items` is [{at:Date, emoji, name?}].
+// Used for a single habit (per-habit screen) and for all meals combined (Bites tab).
+function buildBitesCalendar(items, opts = {}) {
+  const range = CAL_RANGES.find((r) => r.key === bitesCalRange) || CAL_RANGES[0];
+  const todayIdx = dayIndex(Date.now());
+  const startIdx = todayIdx - (range.days - 1);
+  const showWd = range.days <= 7; // weekday label only fits on the wide (week) view
+
+  const buckets = new Map(); // dayIndex -> [items]
+  let total = 0;
+  for (const it of items) {
+    const di = dayIndex(it.at.getTime());
+    if (di < startIdx || di > todayIdx) continue;
+    if (!buckets.has(di)) buckets.set(di, []);
+    buckets.get(di).push(it);
+    total++;
+  }
+
+  const toggle = CAL_RANGES.map((r) =>
+    `<button class="cal-range-btn${r.key === bitesCalRange ? " active" : ""}" data-cal-range="${r.key}">${r.label}</button>`
+  ).join("");
+
+  const now = Date.now();
+  let cols = "";
+  for (let di = startIdx; di <= todayIdx; di++) {
+    const list = (buckets.get(di) || []).slice().sort((a, b) => a.at - b.at); // earliest first (top)
+    const date = new Date(now - (todayIdx - di) * DAY);
+    const dnum = date.getDate();
+    const dots = list.map((it) => {
+      const top = (timeOfDayFrac(it.at) * 100).toFixed(1);
+      const title = fmtDateTime(it.at) + (it.name ? " · " + it.name : "");
+      return `<span class="cal-dot" style="top:${top}%" title="${escapeAttr(title)}">${it.emoji}</span>`;
+    }).join("");
+    const topLabel = showWd
+      ? date.toLocaleDateString(undefined, { weekday: "short" })
+      : (dnum === 1 ? date.toLocaleDateString(undefined, { month: "short" }) : "");
+    cols += `<div class="cal-col${di === todayIdx ? " today" : ""}">
+      <div class="cal-track">${dots}</div>
+      <div class="cal-daylabel"><span class="cal-wd">${topLabel}</span><span class="cal-dnum">${dnum}</span></div>
+    </div>`;
+  }
+
+  const body = total
+    ? `<div class="cal-strip cal-${range.key}">${cols}</div>
+       <p class="hint cal-hint">Top = earlier in the day · bottom = later · ${total} log${total === 1 ? "" : "s"}</p>`
+    : `<p class="msg" style="margin:0">No meals logged in this range yet.</p>`;
+
+  return `<section class="card-section bites-cal">
+    <div class="cal-head">
+      <h3>${opts.title || "Meal calendar"}</h3>
+      <div class="cal-range">${toggle}</div>
+    </div>
+    ${body}
+  </section>`;
+}
+
+// Wire the range toggle inside `root`; `rerender` redraws whichever screen hosts it.
+function wireBitesCalendar(root, rerender) {
+  root.querySelectorAll("[data-cal-range]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      bitesCalRange = btn.dataset.calRange;
+      localStorage.setItem("bitesCalRange", bitesCalRange);
+      rerender();
+    }));
 }
 
 /* ---------- "Buys" cost-per-wear card + item photos ---------- */
@@ -746,6 +833,18 @@ function render() {
       grid.appendChild(msgEl(q ? "No matches due." : "Nothing due right now — you're all caught up. 🎉"));
     }
     return;
+  }
+
+  // Bites tab: a combined meal calendar (all meal habits) sits above the tiles.
+  if (view.key === "bites") {
+    const bhabits = habits.filter((h) => h.type === "bites" && (showHidden || !h.hidden));
+    if (bhabits.length) {
+      const items = [];
+      for (const h of bhabits)
+        for (const e of entriesByHabit[h.id] || []) items.push({ at: e.at, emoji: h.emoji, name: h.name });
+      grid.insertAdjacentHTML("beforeend", buildBitesCalendar(items, { title: "Meal calendar", combined: true }));
+      wireBitesCalendar(grid, render);
+    }
   }
 
   // Grouped view: filter to this tab's types, then group by the user's sections.
@@ -1365,7 +1464,10 @@ function renderHabitScreen() {
 
       <button class="wide" data-act="lognow">${h.type === "buys" ? "Log a wear now" : "Log a new entry now"}</button>
 
-      ${h.type === "buys" ? buildBuysCard(h) : buildTrend(h)}
+      ${h.type === "buys" ? buildBuysCard(h)
+        : h.type === "bites" ? buildBitesCalendar(
+            (entriesByHabit[h.id] || []).map((e) => ({ at: e.at, emoji: h.emoji, name: h.name })))
+        : buildTrend(h)}
 
       <section class="card-section">
         <h3>Backdate a log</h3>
@@ -1477,6 +1579,7 @@ function renderHabitScreen() {
   }
   wireSectionSelect("hs");
   wireEmojiInput(panel.querySelector("#hs-emoji"));
+  wireBitesCalendar(panel, renderHabitScreen); // bites screens carry a meal calendar
   panel.querySelectorAll("[data-note]").forEach((b) =>
     b.addEventListener("click", (e) => { e.stopPropagation(); openNoteEditor(h.id, b.dataset.note); }));
 
@@ -2215,6 +2318,7 @@ function renderSettingsScreen() {
       </section>
       <section class="card-section">
         <h3>Account</h3>
+        <p class="hint" style="margin:0">Signed in as <span id="acct-email">…</span></p>
         <button class="wide secondary" data-act="signout">Sign out</button>
       </section>
       <p class="hint" style="margin-top:0">Build ${APP_BUILD}</p>
@@ -2231,6 +2335,18 @@ function renderSettingsScreen() {
   panel.querySelector('[data-act="csv"]').addEventListener("click", exportCSV);
   panel.querySelectorAll(".tab-up").forEach((b) => b.addEventListener("click", () => moveTab(b.dataset.key, -1)));
   panel.querySelectorAll(".tab-down").forEach((b) => b.addEventListener("click", () => moveTab(b.dataset.key, 1)));
+  // Show the login email with only its first 5 characters, the rest masked.
+  db.auth.getUser().then(({ data }) => {
+    const el = $("acct-email");
+    if (el) el.textContent = redactEmail(data?.user?.email) || "—";
+  });
+}
+
+// First 5 characters of the email shown, the rest masked by a fixed run of "*"
+// (fixed length so it doesn't leak how long the address is).
+function redactEmail(email) {
+  if (!email) return "";
+  return email.slice(0, 5) + "*****";
 }
 
 // Move a tab one slot up (dir -1) or down (dir +1), persist, and refresh both the
