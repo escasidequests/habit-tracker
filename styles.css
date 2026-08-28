@@ -437,6 +437,12 @@ button:disabled { opacity: .5; cursor: default; }
 .emoji-cat { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: 6px; }
 .emoji-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 4px; }
 .emoji-opt { background: var(--card-2); border: 0; font-size: 22px; padding: 6px 0; border-radius: 8px; width: auto; }
+/* The picker has two swappable panels: the type-your-own view and the suggested grid. */
+.emoji-view { display: flex; flex-direction: column; gap: 10px; }
+.emoji-gridhead { display: flex; align-items: center; gap: 6px; }
+.emoji-gridhead .popover-title { flex: 1; padding: 0; }
+.emoji-gridhead button, .emoji-gridhead-spacer { width: 56px; flex: none; }
+.emoji-gridhead button { text-align: left; }
 
 /* First-run welcome */
 .empty-welcome {
@@ -511,7 +517,6 @@ button:disabled { opacity: .5; cursor: default; }
 /* Emoji picker: prominent "type your own" at the top */
 .emoji-custom { background: var(--card-2); border-radius: 10px; padding: 10px 12px; gap: 8px; }
 .emoji-custom input { font-size: 20px; text-align: center; }
-.emoji-or { text-align: center; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 
 /* Section reorder arrows (in Reorder mode) */
 .section-arrows { display: flex; gap: 6px; flex: none; }

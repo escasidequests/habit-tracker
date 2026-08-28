@@ -102,7 +102,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "41";
+const APP_BUILD = "42";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -2046,19 +2046,31 @@ function openEmojiPicker(input) {
      <div class="emoji-grid">${list.map((e) => `<button type="button" class="emoji-opt">${e}</button>`).join("")}</div>`).join("");
   overlay.innerHTML = `
     <div class="popover-card emoji-card">
-      <div class="popover-title">Pick up to 2 emojis</div>
-      <div class="emoji-preview"><span id="emoji-preview"></span>
-        <button data-act="clear" type="button" class="ghost">Clear</button></div>
-      <label class="emoji-custom">Type or paste your own
-        <input type="text" id="emoji-custom-in" maxlength="20" value="${escapeAttr(input.value)}" placeholder="e.g. 🧣" />
-      </label>
-      <div class="emoji-or">or tap below (up to two)</div>
-      <div class="emoji-scroll">${cats}</div>
-      <button data-act="done">Done</button>
+      <div class="emoji-view" data-view="type">
+        <div class="popover-title">Pick up to 2 emojis</div>
+        <div class="emoji-preview"><span id="emoji-preview"></span>
+          <button data-act="clear" type="button" class="ghost">Clear</button></div>
+        <label class="emoji-custom">Type or paste your own
+          <input type="text" id="emoji-custom-in" maxlength="20" value="${escapeAttr(input.value)}" placeholder="e.g. 🧣" />
+        </label>
+        <button data-act="suggest" type="button" class="secondary">✨ Suggested emojis ›</button>
+        <button data-act="done">Done</button>
+      </div>
+      <div class="emoji-view hidden" data-view="grid">
+        <div class="emoji-gridhead">
+          <button data-act="back" type="button" class="ghost">‹ Back</button>
+          <div class="popover-title">Suggested emojis</div>
+          <span class="emoji-gridhead-spacer"></span>
+        </div>
+        <div class="emoji-scroll">${cats}</div>
+        <button data-act="done">Done</button>
+      </div>
     </div>`;
   const close = () => overlay.remove();
   const preview = overlay.querySelector("#emoji-preview");
   const custom = overlay.querySelector("#emoji-custom-in");
+  const typeView = overlay.querySelector('[data-view="type"]');
+  const gridView = overlay.querySelector('[data-view="grid"]');
   const setSel = (v) => {
     const val = clampEmojis(v, 2);
     input.value = val;
@@ -2074,8 +2086,21 @@ function openEmojiPicker(input) {
     }));
   custom.addEventListener("input", () => setSel(custom.value));
   overlay.querySelector('[data-act="clear"]').addEventListener("click", () => setSel(""));
-  overlay.querySelector('[data-act="done"]').addEventListener("click", close);
+  // Suggestions live behind a button so the keyboard/type field stays primary; the
+  // button swaps to a full grid, and Back returns to typing.
+  overlay.querySelector('[data-act="suggest"]').addEventListener("click", () => {
+    typeView.classList.add("hidden"); gridView.classList.remove("hidden");
+  });
+  overlay.querySelector('[data-act="back"]').addEventListener("click", () => {
+    gridView.classList.add("hidden"); typeView.classList.remove("hidden");
+  });
+  overlay.querySelectorAll('[data-act="done"]').forEach((b) => b.addEventListener("click", close));
   document.body.appendChild(overlay);
+  // Keyboard-first: drop the cursor straight into the type field. iOS doesn't always
+  // honour programmatic focus, so a tap may still be needed — but when it works the
+  // keyboard is up immediately.
+  custom.focus();
+  custom.setSelectionRange(custom.value.length, custom.value.length);
 }
 
 /* ---------- Add habit modal ---------- */
