@@ -102,7 +102,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "42";
+const APP_BUILD = "43";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -242,14 +242,15 @@ function friendlyAuthError(error) {
 async function loadAndRender() {
   const [{ data: h, error: he }, { data: en, error: ee }] = await Promise.all([
     db.from("habits").select("*").order("sort_order"),
-    db.from("entries").select("id, habit_id, logged_at, note"),
+    db.from("entries").select("id, habit_id, logged_at, note, tag"),
   ]);
   if (he || ee) { alert((he || ee).message); return; }
   habits = h || [];
   habits.forEach((x) => { if (LEGACY_TYPE[x.type]) x.type = LEGACY_TYPE[x.type]; }); // pre-migration safety
+  habits.forEach((x) => { if (!Array.isArray(x.tags)) x.tags = []; });                // pre-phase15 safety
   entriesByHabit = {};
   (en || []).forEach((row) => {
-    (entriesByHabit[row.habit_id] ||= []).push({ id: row.id, at: new Date(row.logged_at), note: row.note || "" });
+    (entriesByHabit[row.habit_id] ||= []).push({ id: row.id, at: new Date(row.logged_at), note: row.note || "", tag: row.tag || "" });
   });
   // Sections may not exist yet (before phase7.sql) — treat a query error as "no sections".
   const { data: s, error: se } = await db.from("sections").select("*").order("sort_order");
@@ -381,8 +382,13 @@ function trendSvg(gaps, color) {
 
 // Full "Trend" card for the habit screen. Needs >=3 logs (2 gaps) to draw a line.
 function buildTrend(h) {
-  const list = (entriesByHabit[h.id] || []).map((e) => dayIndex(e.at.getTime())).sort((a, b) => a - b);
-  const cfg = trendConfig(h.type);
+  return trendCard(trendConfig(h.type), entriesByHabit[h.id] || [], trendColor(h));
+}
+
+// The trend card body for an arbitrary list of entries — the whole habit, or a
+// single tag's subset. Same math either way.
+function trendCard(cfg, entryList, color) {
+  const list = entryList.map((e) => dayIndex(e.at.getTime())).sort((a, b) => a - b);
   let body;
   if (list.length < 3) {
     body = '<p class="msg" style="margin:0">Log a few more times to see your trend.</p>';
@@ -393,7 +399,7 @@ function buildTrend(h) {
     const avg = allGaps.reduce((s, g) => s + g, 0) / allGaps.length;
     const longest = Math.max(...allGaps);
     body = `
-      ${trendSvg(gaps, trendColor(h))}
+      ${trendSvg(gaps, color)}
       <div class="trend-stats">
         <span>Avg <b>${Math.round(avg)}d</b></span>
         <span>${cfg.longestLabel} <b>${Math.round(longest)}d</b></span>
@@ -401,6 +407,123 @@ function buildTrend(h) {
       ${cfg.caption ? `<p class="hint" style="margin:0">${cfg.caption}</p>` : ""}`;
   }
   return `<section class="card-section"><h3>${cfg.title}</h3>${body}</section>`;
+}
+
+// "By tag" card: per-tag count + days-since (tap a row for that subset's trend),
+// plus rename/delete and "+ Add tag". Shown on every habit so tags can be added;
+// when none exist yet it's just a hint + the add button.
+function buildTagBreakdown(h) {
+  const tags = h.tags || [];
+  const all = entriesByHabit[h.id] || [];
+  const rows = tags.map((t) => {
+    const list = all.filter((e) => (e.tag || "") === t);
+    const ds = list.length ? dayIndex(Date.now()) - dayIndex(Math.max(...list.map((e) => e.at.getTime()))) : null;
+    return `<div class="tag-line" data-tagdetail="${escapeAttr(t)}">
+      <span class="tag-line-name">${escapeHtml(t)}</span>
+      <span class="tag-line-stat">${list.length} log${list.length === 1 ? "" : "s"}${ds === null ? "" : ` · ${ds}d`}</span>
+      <button class="tag-line-btn" data-tagrename="${escapeAttr(t)}" title="Rename">✎</button>
+      <button class="tag-line-btn" data-tagdel="${escapeAttr(t)}" title="Delete">✕</button>
+    </div>`;
+  }).join("");
+  const untagged = all.filter((e) => !e.tag).length;
+  const untaggedRow = (tags.length && untagged)
+    ? `<div class="tag-line muted"><span class="tag-line-name">Untagged</span><span class="tag-line-stat">${untagged} log${untagged === 1 ? "" : "s"}</span></div>`
+    : "";
+  const hint = tags.length ? ""
+    : `<p class="hint" style="margin:0 0 8px">Add tags to track subsets of this habit — e.g. which restaurant. Tapping the habit to log then lets you pick one.</p>`;
+  return `<section class="card-section">
+    <h3>By tag</h3>
+    ${hint}
+    <div class="tag-list">${rows}${untaggedRow}</div>
+    <button class="wide secondary" data-act="addtag">＋ Add tag</button>
+  </section>`;
+}
+
+// Persist a habit's tag list. Returns true on success.
+async function saveHabitTags(h, tags) {
+  const { error } = await db.from("habits").update({ tags }).eq("id", h.id);
+  if (error) { alert(error.message); return false; }
+  h.tags = tags;
+  return true;
+}
+
+async function addHabitTag(h) {
+  const name = (prompt("New tag:") || "").trim();
+  if (!name) return;
+  if ((h.tags || []).some((t) => t.toLowerCase() === name.toLowerCase())) return alert("That tag already exists.");
+  if (await saveHabitTags(h, [...(h.tags || []), name])) renderHabitScreen();
+}
+
+async function renameHabitTag(h, old) {
+  const name = (prompt("Rename tag:", old) || "").trim();
+  if (!name || name === old) return;
+  if ((h.tags || []).some((t) => t !== old && t.toLowerCase() === name.toLowerCase())) return alert("You already have a tag with that name.");
+  // Cascade to past logs so their history stays grouped under the new name.
+  const { error } = await db.from("entries").update({ tag: name }).eq("habit_id", h.id).eq("tag", old);
+  if (error) return alert(error.message);
+  (entriesByHabit[h.id] || []).forEach((e) => { if (e.tag === old) e.tag = name; });
+  if (await saveHabitTags(h, (h.tags || []).map((t) => (t === old ? name : t)))) { renderHabitScreen(); render(); }
+}
+
+async function deleteHabitTag(h, tag) {
+  if (!confirm(`Delete the tag "${tag}"?\n\nPast logs keep it in their history, but it won't be offered when logging anymore.`)) return;
+  if (await saveHabitTags(h, (h.tags || []).filter((t) => t !== tag))) { renderHabitScreen(); render(); }
+}
+
+// A tag's subset view: count, days-since, and the trend chart for just that tag.
+function openTagDetail(h, tag) {
+  const list = (entriesByHabit[h.id] || []).filter((e) => (e.tag || "") === tag);
+  const count = list.length;
+  const daysSince = count ? dayIndex(Date.now()) - dayIndex(Math.max(...list.map((e) => e.at.getTime()))) : null;
+  const overlay = document.createElement("div");
+  overlay.id = "tag-detail";
+  overlay.className = "popover show";
+  overlay.innerHTML = `
+    <div class="popover-card">
+      <div class="popover-title">${h.emoji} ${escapeHtml(h.name)} — ${escapeHtml(tag)}</div>
+      <div class="stat-row">
+        <div class="stat-box"><div class="big">${count}</div><div class="lbl">${count === 1 ? "log" : "logs"}</div></div>
+        <div class="stat-box"><div class="big">${daysSince === null ? "–" : daysSince}</div><div class="lbl">${daysSince === 1 ? "day since" : "days since"}</div></div>
+      </div>
+      ${trendCard(trendConfig(h.type), list, trendColor(h))}
+      <button data-act="close">Close</button>
+    </div>`;
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-act="close"]').addEventListener("click", close);
+  document.body.appendChild(overlay);
+}
+
+// Set/change the tag on a single past log (fixes a mis-tap). Picking saves and closes.
+function openEntryTagPicker(h, entryId) {
+  const entry = (entriesByHabit[h.id] || []).find((e) => e.id === entryId);
+  if (!entry) return;
+  const tags = h.tags || [];
+  const overlay = document.createElement("div");
+  overlay.id = "entry-tag";
+  overlay.className = "popover show";
+  overlay.innerHTML = `
+    <div class="popover-card">
+      <div class="popover-title">Tag this log</div>
+      <div class="tag-chips">
+        <button type="button" class="tag-chip${entry.tag ? "" : " active"}" data-tag="">No tag</button>
+        ${tags.map((t) => `<button type="button" class="tag-chip${entry.tag === t ? " active" : ""}" data-tag="${escapeAttr(t)}">${escapeHtml(t)}</button>`).join("")}
+      </div>
+      <button data-act="cancel" class="ghost">Cancel</button>
+    </div>`;
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
+  overlay.querySelectorAll(".tag-chip").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const tag = b.dataset.tag;
+      const { error } = await db.from("entries").update({ tag: tag || null }).eq("id", entryId);
+      if (error) return alert(error.message);
+      entry.tag = tag;
+      close();
+      renderHabitScreen();
+    }));
+  document.body.appendChild(overlay);
 }
 
 /* ---------- "Bites" meal calendar (used instead of the trend chart) ---------- */
@@ -1401,6 +1524,7 @@ function renderHabitScreen() {
 
   const { count, daysSince } = stats(h.id);
   const entries = (entriesByHabit[h.id] || []).slice().sort((a, b) => b.at - a.at);
+  const hasTags = (h.tags || []).length > 0;
 
   let cadence = "";
   if (h.due_mode === "recurrence" && h.recurrence_days) {
@@ -1419,20 +1543,22 @@ function renderHabitScreen() {
   if (!entries.length) {
     historyHtml = '<p class="msg">No logs yet.</p>';
   } else if (isTouch) {
-    // Swipe a row left to reveal a Delete button; tap 📝 to add/edit a note.
+    // Swipe a row left to reveal a Delete button; tap 📝 to add/edit a note, 🏷 to tag.
     historyHtml = entries.map((e) => `
       <div class="swipe" data-id="${e.id}">
         <button class="swipe-del" data-id="${e.id}">Delete</button>
         <div class="swipe-content">
           <div class="hist-main">
             <span>${fmtDateTime(e.at)}</span>
+            ${e.tag ? `<span class="hist-tag">${escapeHtml(e.tag)}</span>` : ""}
             ${e.note ? `<span class="hist-note">${escapeHtml(e.note)}</span>` : ""}
           </div>
+          ${hasTags ? `<button class="note-btn${e.tag ? " has-note" : ""}" data-tagedit="${e.id}">🏷</button>` : ""}
           <button class="note-btn${e.note ? " has-note" : ""}" data-note="${e.id}">📝</button>
         </div>
       </div>`).join("");
   } else {
-    // Check rows, then Delete selected; 📝 to add/edit a note.
+    // Check rows, then Delete selected; 📝 to add/edit a note, 🏷 to tag.
     historyHtml = `
       <div class="bulk-bar">
         <button data-act="del-selected" disabled>Delete selected</button>
@@ -1442,8 +1568,10 @@ function renderHabitScreen() {
         <div class="hist-row select">
           <div class="hist-main">
             <span>${fmtDateTime(e.at)}</span>
+            ${e.tag ? `<span class="hist-tag">${escapeHtml(e.tag)}</span>` : ""}
             ${e.note ? `<span class="hist-note">${escapeHtml(e.note)}</span>` : ""}
           </div>
+          ${hasTags ? `<button class="note-btn${e.tag ? " has-note" : ""}" data-tagedit="${e.id}">🏷</button>` : ""}
           <button class="note-btn${e.note ? " has-note" : ""}" data-note="${e.id}">📝</button>
           <input type="checkbox" class="hist-check" data-id="${e.id}" />
         </div>`).join("");
@@ -1468,6 +1596,8 @@ function renderHabitScreen() {
         : h.type === "bites" ? buildBitesCalendar(
             (entriesByHabit[h.id] || []).map((e) => ({ at: e.at, emoji: h.emoji, name: h.name })))
         : buildTrend(h)}
+
+      ${buildTagBreakdown(h)}
 
       <section class="card-section">
         <h3>Backdate a log</h3>
@@ -1582,6 +1712,17 @@ function renderHabitScreen() {
   wireBitesCalendar(panel, renderHabitScreen); // bites screens carry a meal calendar
   panel.querySelectorAll("[data-note]").forEach((b) =>
     b.addEventListener("click", (e) => { e.stopPropagation(); openNoteEditor(h.id, b.dataset.note); }));
+
+  // Tag controls: edit a log's tag, open a tag's subset detail, and manage the list.
+  panel.querySelectorAll("[data-tagedit]").forEach((b) =>
+    b.addEventListener("click", (e) => { e.stopPropagation(); openEntryTagPicker(h, b.dataset.tagedit); }));
+  panel.querySelectorAll("[data-tagdetail]").forEach((row) =>
+    row.addEventListener("click", () => openTagDetail(h, row.dataset.tagdetail)));
+  panel.querySelectorAll("[data-tagrename]").forEach((b) =>
+    b.addEventListener("click", (e) => { e.stopPropagation(); renameHabitTag(h, b.dataset.tagrename); }));
+  panel.querySelectorAll("[data-tagdel]").forEach((b) =>
+    b.addEventListener("click", (e) => { e.stopPropagation(); deleteHabitTag(h, b.dataset.tagdel); }));
+  panel.querySelector('[data-act="addtag"]').addEventListener("click", () => addHabitTag(h));
 
   panel.querySelector('[data-act="lognow"]').addEventListener("click", async () => {
     buzz();
@@ -1868,6 +2009,17 @@ function openLogSheet(h, tile) {
   const overlay = document.createElement("div");
   overlay.id = "log-sheet";
   overlay.className = "popover show";
+  // When the habit has tags, offer a chip row to pick which subset this log is (e.g.
+  // which restaurant). "No tag" is selected by default so it's always skippable.
+  const tags = h.tags || [];
+  const tagRow = tags.length ? `
+      <div class="log-tags">
+        <span class="log-tags-lbl">Which one?</span>
+        <div class="tag-chips">
+          <button type="button" class="tag-chip active" data-tag="">No tag</button>
+          ${tags.map((t) => `<button type="button" class="tag-chip" data-tag="${escapeAttr(t)}">${escapeHtml(t)}</button>`).join("")}
+        </div>
+      </div>` : "";
   overlay.innerHTML = `
     <div class="popover-card">
       <div class="popover-title">${h.emoji} ${escapeHtml(h.name)}</div>
@@ -1875,10 +2027,18 @@ function openLogSheet(h, tile) {
       <label>When?
         <input type="datetime-local" id="log-when" value="${toLocalInputValue(new Date())}" />
       </label>
+      ${tagRow}
       <button data-act="confirm">Log it</button>
       <button data-act="cancel" class="ghost">Cancel</button>
     </div>`;
   const close = () => overlay.remove();
+  let chosenTag = "";
+  overlay.querySelectorAll(".tag-chip").forEach((b) =>
+    b.addEventListener("click", () => {
+      overlay.querySelectorAll(".tag-chip").forEach((x) => x.classList.remove("active"));
+      b.classList.add("active");
+      chosenTag = b.dataset.tag;
+    }));
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
   overlay.querySelector('[data-act="screen"]').addEventListener("click", () => { close(); openHabitScreen(h.id); });
   overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
@@ -1888,17 +2048,17 @@ function openLogSheet(h, tile) {
     const when = new Date(v);
     if (isNaN(when)) return alert("Couldn't read that date.");
     close();
-    logEntry(h.id, when, tile);
+    logEntry(h.id, when, tile, chosenTag);
   });
   document.body.appendChild(overlay);
 }
 
 // Insert an entry at `when` with the full tap feedback: pop, toast + undo, and a
 // Due-tab refresh so a now-satisfied habit drops off.
-async function logEntry(habitId, when, tile) {
+async function logEntry(habitId, when, tile, tag) {
   buzz();
   popTile(tile);
-  const row = await insertEntry(habitId, when);
+  const row = await insertEntry(habitId, when, tag);
   if (!row) return;
   updateTile(habitId);
   const h = habits.find((x) => x.id === habitId);
@@ -1907,14 +2067,15 @@ async function logEntry(habitId, when, tile) {
   if (currentView === "due") setTimeout(() => { if (currentView === "due") render(); }, 850);
 }
 
-// Insert an entry; returns the new row ({id}) or null on error.
-async function insertEntry(habitId, when) {
+// Insert an entry; returns the new row ({id}) or null on error. `tag` is optional
+// (the chosen subset, e.g. which restaurant) — null/"" means logged without a tag.
+async function insertEntry(habitId, when, tag) {
   const { data: u } = await db.auth.getUser();
   const { data, error } = await db.from("entries").insert({
-    habit_id: habitId, user_id: u.user.id, logged_at: when.toISOString(),
+    habit_id: habitId, user_id: u.user.id, logged_at: when.toISOString(), tag: tag || null,
   }).select("id").single();
   if (error) { alert(error.message); return null; }
-  (entriesByHabit[habitId] ||= []).push({ id: data.id, at: when });
+  (entriesByHabit[habitId] ||= []).push({ id: data.id, at: when, tag: tag || "" });
   return data;
 }
 
@@ -2395,7 +2556,7 @@ function moveTab(key, dir) {
 function allEntriesFlat() {
   const out = [];
   for (const [habitId, list] of Object.entries(entriesByHabit)) {
-    for (const e of list) out.push({ id: e.id, habit_id: habitId, logged_at: e.at.toISOString(), note: e.note || "" });
+    for (const e of list) out.push({ id: e.id, habit_id: habitId, logged_at: e.at.toISOString(), note: e.note || "", tag: e.tag || "" });
   }
   return out;
 }
@@ -2419,11 +2580,11 @@ function exportJSON() {
 function exportCSV() {
   const byId = Object.fromEntries(habits.map((h) => [h.id, h]));
   const rows = allEntriesFlat().sort((a, b) => (a.logged_at < b.logged_at ? -1 : 1));
-  const header = ["logged_at", "habit", "type", "emoji", "color", "note"];
+  const header = ["logged_at", "habit", "type", "emoji", "color", "tag", "note"];
   const lines = [header.join(",")];
   for (const e of rows) {
     const h = byId[e.habit_id] || {};
-    lines.push([e.logged_at, h.name || "", h.type || "", h.emoji || "", h.color || "", e.note].map(csvCell).join(","));
+    lines.push([e.logged_at, h.name || "", h.type || "", h.emoji || "", h.color || "", e.tag, e.note].map(csvCell).join(","));
   }
   downloadFile(`habit-tracker-logs-${todayStamp()}.csv`, lines.join("\n"), "text/csv");
   showToast("Exported CSV");
