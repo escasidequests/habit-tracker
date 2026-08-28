@@ -102,7 +102,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "40";
+const APP_BUILD = "41";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -2015,7 +2015,12 @@ function wireEmojiInput(input) {
   input.dataset.emojiWired = "1";
   input.readOnly = true;
   input.classList.add("emoji-input");
-  input.addEventListener("click", () => openEmojiPicker(input));
+  // Open the picker from anywhere in the "Emoji [box]" label — a bigger tap target than
+  // the small readonly box. preventDefault stops iOS from dropping a no-op text caret in
+  // the readonly input (a blinking cursor with no keyboard), which made off-centre taps
+  // feel like they did nothing.
+  const target = input.closest("label") || input;
+  target.addEventListener("click", (e) => { e.preventDefault(); openEmojiPicker(input); });
 }
 
 // Split a string into grapheme clusters, so a single flag/ZWJ emoji counts as one.

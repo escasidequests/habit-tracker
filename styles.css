@@ -35,6 +35,10 @@ body {
 .auth-card input, .modal-card input, .modal-card select {
   background: var(--card-2); border: 1px solid #313a46; color: var(--text);
   padding: 12px; border-radius: 10px; font-size: 16px;
+  /* iOS Safari can defer a tap while it decides if you're double-tapping to zoom,
+     and occasionally swallows the first tap so the keyboard never opens. This opts
+     the field out of that heuristic so a single tap reliably focuses it. */
+  touch-action: manipulation;
 }
 button {
   background: var(--people); color: #fff; border: 0; padding: 12px; border-radius: 10px;
