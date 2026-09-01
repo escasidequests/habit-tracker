@@ -1,7 +1,8 @@
 // Minimal service worker: caches the app shell so it opens offline.
 // Data always comes from Supabase over the network.
-const CACHE = "habit-shell-v43";
+const CACHE = "habit-shell-v44";
 const SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./config.js",
+  "./supabase-2.112.4.min.js",
   "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
@@ -15,11 +16,24 @@ self.addEventListener("activate", (e) => {
   );
 });
 
+// Stale-while-revalidate for our own files: serve the saved copy instantly (no
+// black screen waiting on the radio), then refresh it in the background for next
+// time. Only if nothing is cached do we wait on the network, falling back to the
+// app shell when offline. Supabase API calls are cross-origin and skip all of this.
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== self.location.origin) return; // let Supabase calls hit the network
   e.respondWith(
-    fetch(e.request).catch(() => caches.match(e.request).then((r) => r || caches.match("./index.html")))
+    caches.match(e.request).then((cached) => {
+      const network = fetch(e.request).then((res) => {
+        if (res && res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy));
+        }
+        return res;
+      }).catch(() => cached || caches.match("./index.html"));
+      return cached || network;
+    })
   );
 });
 

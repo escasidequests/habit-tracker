@@ -108,7 +108,10 @@
     <button id="toast-undo" type="button">Undo</button>
   </div>
 
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- Vendored locally (pinned) and cached by the service worker so a cold/slow
+       launch never blocks on a CDN download. Update by re-downloading a new pinned
+       version and bumping the sw.js CACHE. -->
+  <script src="supabase-2.112.4.min.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
   <script>
