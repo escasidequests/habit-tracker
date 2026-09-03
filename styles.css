@@ -63,6 +63,15 @@ button.secondary { background: transparent; border: 1px solid #3a4552; color: va
   border-bottom: 1px solid #232a34; scrollbar-width: none;
 }
 .tabs::-webkit-scrollbar { display: none; }
+/* Bottom nav: category tabs pinned to the bottom of the screen, thumb-reachable.
+   z-index stays below .screen (40)/.popover (50) so a single-habit screen covers it. */
+.tabs.bottomnav {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
+  background: var(--bg); border-top: 1px solid #232a34; border-bottom: 0;
+}
+/* Reserve space so the last habit isn't hidden behind the fixed bar. */
+#app { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
 .tab {
   flex: none; display: inline-flex; align-items: center; gap: 6px;
   background: var(--card); color: var(--muted); border: 1px solid #2a323d;
