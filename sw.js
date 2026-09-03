@@ -1,6 +1,6 @@
 // Minimal service worker: caches the app shell so it opens offline.
 // Data always comes from Supabase over the network.
-const CACHE = "habit-shell-v45";
+const CACHE = "habit-shell-v46";
 const SHELL = ["./", "./index.html", "./styles.css", "./app.js", "./config.js",
   "./supabase-2.112.4.min.js",
   "./manifest.webmanifest", "./icon-192.png", "./icon-512.png"];

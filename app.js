@@ -38,6 +38,7 @@ const LEGACY_TYPE = { good: "build", bad: "break", neutral: "track", people_hang
 // by the user's custom sections (not by type).
 const VIEWS = [
   { key: "due", label: "Due", types: null },
+  { key: "highlighted", label: "★ Highlighted", types: null },
   { key: "build", label: "Build & Track", types: ["build", "track"] },
   { key: "break", label: "Break", types: ["break"] },
   { key: "bonds", label: "Bonds", types: ["bonds"] },
@@ -102,7 +103,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "45";
+const APP_BUILD = "46";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -918,8 +919,9 @@ function sortForGroup(list) {
 /* ---------- Render ---------- */
 
 function render() {
-  // Reorder only makes sense on a grouped (non-Due) view.
-  if (reorderMode && currentView === "due") reorderMode = false;
+  // Reorder only makes sense on a grouped (section) view — not on the flat Due
+  // or Highlighted lists, which pull habits from across every section.
+  if (reorderMode && (currentView === "due" || currentView === "highlighted")) reorderMode = false;
 
   renderTabs();
   renderControls();
@@ -955,6 +957,15 @@ function render() {
     if (!soon.length && !over.length) {
       grid.appendChild(msgEl(q ? "No matches due." : "Nothing due right now — you're all caught up. 🎉"));
     }
+    return;
+  }
+
+  // Highlighted tab: a flat, cross-section list of just the habits you've flagged.
+  if (view.key === "highlighted") {
+    const inView = habits.filter((h) => h.highlighted && matches(h) && (showHidden || !h.hidden));
+    if (inView.length) renderGroup(grid, "Highlighted", sortForGroup(inView));
+    else grid.appendChild(msgEl(q ? "No matching highlighted habits."
+      : "No highlighted habits yet — open a habit and check “★ Highlight” to add it here."));
     return;
   }
 
@@ -1011,7 +1022,9 @@ function renderControls() {
   sortSel.classList.toggle("hidden", onDue);
   sortSel.value = sortMode;
   const reorderBtn = $("reorder");
-  reorderBtn.classList.toggle("hidden", onDue); // sections are reorderable in any sort mode
+  // Sections are reorderable in any sort mode — but only on grouped views, not the
+  // flat Due/Highlighted lists.
+  reorderBtn.classList.toggle("hidden", onDue || currentView === "highlighted");
   reorderBtn.classList.toggle("active", reorderMode);
   reorderBtn.textContent = reorderMode ? "Done" : "Reorder";
   // Scope toggle only matters while a search is active.
@@ -1628,6 +1641,7 @@ function renderHabitScreen() {
           ? buysFieldsHtml("hs", h)
           : dueControlHtml("hs", h.due_mode, h.recurrence_days, h.reminder_lead_days)}
         <label class="row"><input id="hs-pinned" type="checkbox"${h.pinned ? " checked" : ""} /> Pin to top</label>
+        <label class="row"><input id="hs-highlight" type="checkbox"${h.highlighted ? " checked" : ""} /> ★ Highlight (show on Highlighted tab)</label>
         ${h.type === "buys" ? "" : `<label class="row"><input id="hs-paused" type="checkbox"${h.paused ? " checked" : ""} /> Paused (no reminders)</label>`}
         <label class="row"><input id="hs-hidden" type="checkbox"${h.hidden ? " checked" : ""} /> Hide from main view</label>
       </section>
@@ -1648,6 +1662,7 @@ function renderHabitScreen() {
       color: getColor(),
       section_id: readSectionSelect("hs"),
       pinned: $("hs-pinned").checked,
+      highlighted: $("hs-highlight").checked,
       hidden: $("hs-hidden").checked,
       paused: $("hs-paused") ? $("hs-paused").checked : (h.paused || false),
     };
