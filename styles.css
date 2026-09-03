@@ -562,4 +562,29 @@ button:disabled { opacity: .5; cursor: default; }
 /* Emoji picker: 2-emoji preview */
 .emoji-preview { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .emoji-preview #emoji-preview { font-size: 30px; line-height: 1; min-height: 34px; }
+
+/* Goals */
+.tile .count.goal { color: var(--good); font-weight: 700; }
+.goal-active { display: flex; flex-direction: column; gap: 8px; }
+.goal-bar { height: 8px; border-radius: 999px; background: var(--card-2); overflow: hidden; }
+.goal-fill { height: 100%; background: var(--good); border-radius: 999px; transition: width .3s ease; }
+.goal-progress { font-size: 15px; font-weight: 700; }
+.goal-meta { font-size: 12px; color: var(--muted); margin: 0; }
+.goal-reward { font-size: 13px; margin: 0; }
+
+/* Goal-reached celebration (above every screen/overlay) */
+.goal-celebrate {
+  position: fixed; inset: 0; z-index: 70; display: grid; place-items: center;
+  background: rgba(0,0,0,.55); padding: 24px; animation: gc-in .25s ease;
+}
+.gc-card {
+  background: var(--card); border: 1px solid var(--good); border-radius: var(--radius);
+  padding: 28px 24px; text-align: center; max-width: 320px; display: flex;
+  flex-direction: column; gap: 8px;
+}
+.gc-emoji { font-size: 48px; line-height: 1; }
+.gc-title { font-size: 22px; font-weight: 800; color: var(--good); }
+.gc-sub { font-size: 14px; color: var(--muted); }
+.gc-reward { font-size: 16px; font-weight: 700; margin-top: 4px; }
+@keyframes gc-in { from { opacity: 0; transform: scale(.9); } to { opacity: 1; transform: scale(1); } }
 .emoji-preview button { width: auto; padding: 4px 10px; font-size: 13px; }

@@ -103,13 +103,14 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "46";
+const APP_BUILD = "47";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
 
 let habits = [];
 let entriesByHabit = {}; // habit_id -> [{id, at, note}, ...]
+let goalsByHabit = {};   // habit_id -> the one active (uncompleted) goal, if any
 let sections = [];       // user-defined home-screen groups: [{id, name, sort_order, collapsed}, ...]
 let renderedSections = []; // real sections shown in the current tab, in order (for reorder arrows)
 
@@ -256,6 +257,14 @@ async function loadAndRender() {
   // Sections may not exist yet (before phase7.sql) — treat a query error as "no sections".
   const { data: s, error: se } = await db.from("sections").select("*").order("sort_order");
   sections = se ? [] : (s || []);
+  // Goals may not exist yet (before phase18.sql) — treat a query error as "no goals".
+  // Keep only the active (uncompleted) goal per habit; the UI allows one at a time.
+  goalsByHabit = {};
+  const { data: g, error: ge } = await db.from("goals").select("*").is("completed_at", null);
+  if (!ge) for (const goal of g || []) {
+    const prev = goalsByHabit[goal.habit_id];
+    if (!prev || new Date(goal.created_at) > new Date(prev.created_at)) goalsByHabit[goal.habit_id] = goal;
+  }
   await loadPrefs();
   render();
 }
@@ -1252,6 +1261,155 @@ function tileMetric(h, count) {
   return count + "×";
 }
 
+/* ---------- Goals ----------
+   A goal = "log this habit, with a specific tag, N times" (optionally by a date).
+   Counting is forward-looking: only tagged logs on/after the goal's creation count. */
+
+// Tagged logs that count toward a goal: matching tag, logged on/after it was created.
+function goalProgress(goal) {
+  const start = new Date(goal.created_at).getTime();
+  return (entriesByHabit[goal.habit_id] || [])
+    .filter((e) => (e.tag || "") === goal.tag && e.at.getTime() >= start).length;
+}
+
+// Compact label for an active goal on a tile, e.g. "🎯 18/30".
+function goalTileText(goal) {
+  return `🎯 ${goalProgress(goal)}/${goal.target_count}`;
+}
+
+// Pace info for a dated goal (Path B). null for open-ended goals (no date). A passed
+// date is reported neutrally, not as a failure (we keep counting quietly).
+function goalPace(goal, progress) {
+  if (!goal.target_date) return null;
+  const remaining = goal.target_count - progress;
+  if (remaining <= 0) return null;
+  const dayMs = 86400000;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const target = new Date(goal.target_date + "T00:00:00");
+  const daysLeft = Math.round((target - today) / dayMs);
+  if (daysLeft <= 0) return { past: true, target };
+  const perWeek = remaining / (daysLeft / 7);
+  // Projected finish from the goal's own rate so far (progress since it was created).
+  const daysElapsed = Math.max(1, (today - new Date(goal.created_at)) / dayMs);
+  const rate = progress / daysElapsed; // logs per day
+  const onTrack = rate > 0 ? (remaining / rate) <= daysLeft : null;
+  return { remaining, daysLeft, perWeek, onTrack, target };
+}
+
+// The "Goal" card on the habit screen: active goal + progress, a "Set a goal" button,
+// or a prompt to add a tag first (goals require one, so progress stays filterable).
+function buildGoalCard(h) {
+  const goal = goalsByHabit[h.id];
+  if (goal) {
+    const progress = goalProgress(goal);
+    const pct = Math.min(100, Math.round((progress / goal.target_count) * 100));
+    const pace = goalPace(goal, progress);
+    let paceLine = "";
+    if (pace && pace.past) {
+      paceLine = `<p class="goal-meta">Target date ${fmtDate(pace.target)} passed — still counting.</p>`;
+    } else if (pace) {
+      const track = pace.onTrack == null ? "" : pace.onTrack ? " · on track" : " · behind pace";
+      paceLine = `<p class="goal-meta">${pace.remaining} to go · ~${pace.perWeek.toFixed(1)}/week to reach it by ${fmtDate(pace.target)}${track}</p>`;
+    }
+    return `
+      <div class="goal-active">
+        <div class="goal-bar"><div class="goal-fill" style="width:${pct}%"></div></div>
+        <div class="goal-progress">🎯 ${progress} / ${goal.target_count} · 🏷 ${escapeHtml(goal.tag)}</div>
+        ${paceLine}
+        ${goal.reward ? `<p class="goal-reward">🎁 ${escapeHtml(goal.reward)}</p>` : ""}
+        <button class="secondary" data-act="goal-remove">Remove goal</button>
+      </div>`;
+  }
+  if ((h.tags || []).length) return `<button class="wide" data-act="goal-set">🎯 Set a goal</button>`;
+  return `<p class="msg">Add a tag to this habit first — a goal tracks a tagged subset, so progress stays filterable.</p>`;
+}
+
+// Popover to create a goal. Tag is required; date and reward are optional.
+function openGoalEditor(h) {
+  const tags = h.tags || [];
+  const overlay = document.createElement("div");
+  overlay.className = "popover show";
+  overlay.innerHTML = `
+    <div class="popover-card">
+      <div class="popover-title">🎯 Set a goal</div>
+      <label>Track which tag
+        <select id="goal-tag">${tags.map((t) => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join("")}</select>
+      </label>
+      <label>Target count <input id="goal-count" type="number" min="1" step="1" inputmode="numeric" placeholder="30" /></label>
+      <label>Target date — optional <input id="goal-date" type="date" /></label>
+      <label>Reward — optional <input id="goal-reward" maxlength="120" placeholder="e.g. New pixel whip 🎉" /></label>
+      <div class="modal-actions">
+        <button type="button" class="ghost" data-act="cancel">Cancel</button>
+        <button type="button" data-act="save">Save goal</button>
+      </div>
+    </div>`;
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+  overlay.querySelector('[data-act="cancel"]').addEventListener("click", close);
+  overlay.querySelector('[data-act="save"]').addEventListener("click", async () => {
+    const tag = $("goal-tag").value;
+    const target = parseInt($("goal-count").value, 10);
+    if (!tag) return alert("Pick a tag to track.");
+    if (!target || target < 1) return alert("Enter a target count of 1 or more.");
+    const target_date = $("goal-date").value || null;
+    const reward = $("goal-reward").value.trim() || null;
+    const { data: u } = await db.auth.getUser();
+    const { data, error } = await db.from("goals").insert({
+      user_id: u.user.id, habit_id: h.id, tag, target_count: target, target_date, reward,
+    }).select().single();
+    if (error) { alert(error.message); return; }
+    goalsByHabit[h.id] = data;
+    close();
+    renderHabitScreen();
+    render();
+  });
+  document.body.appendChild(overlay);
+}
+
+async function removeGoal(h) {
+  const goal = goalsByHabit[h.id];
+  if (!goal) return;
+  if (!confirm("Remove this goal? Your logs stay — only the goal is deleted.")) return;
+  const { error } = await db.from("goals").delete().eq("id", goal.id);
+  if (error) { alert(error.message); return; }
+  delete goalsByHabit[h.id];
+  renderHabitScreen();
+  render();
+}
+
+// After a log lands, mark the habit's active goal complete if it just reached target.
+// Stamps completed_at once (so the celebration fires a single time and the goal frees
+// up the one-per-habit slot), then celebrates.
+async function maybeCompleteGoal(habitId) {
+  const goal = goalsByHabit[habitId];
+  if (!goal || goal.completed_at) return;
+  if (goalProgress(goal) < goal.target_count) return;
+  const stamp = new Date().toISOString();
+  const { error } = await db.from("goals").update({ completed_at: stamp }).eq("id", goal.id);
+  if (error) { console.warn("Couldn't mark goal complete:", error.message); return; }
+  goal.completed_at = stamp;
+  delete goalsByHabit[habitId];
+  celebrateGoal(goal, habits.find((x) => x.id === habitId));
+}
+
+// Full-screen festive overlay shown once when a goal is reached. Tap or wait to dismiss.
+function celebrateGoal(goal, h) {
+  const el = document.createElement("div");
+  el.className = "goal-celebrate";
+  el.innerHTML = `
+    <div class="gc-card">
+      <div class="gc-emoji">🎉</div>
+      <div class="gc-title">Goal reached!</div>
+      <div class="gc-sub">${h ? escapeHtml(h.emoji + " " + h.name) : ""} — ${goal.target_count}× ${escapeHtml(goal.tag)}</div>
+      ${goal.reward ? `<div class="gc-reward">🎁 ${escapeHtml(goal.reward)}</div>` : ""}
+    </div>`;
+  const done = () => el.remove();
+  el.addEventListener("click", done);
+  document.body.appendChild(el);
+  buzz();
+  setTimeout(done, 3200);
+}
+
 function buildTile(h) {
   const { count, daysSince } = stats(h.id);
   const status = dueStatus(h, daysSince);
@@ -1275,7 +1433,7 @@ function buildTile(h) {
     <div class="emoji">${icon}</div>
     <div class="name">${escapeHtml(h.name)}</div>
     <div class="stat">${sinceText(daysSince)}</div>
-    <div class="count">${tileMetric(h, count)}</div>`;
+    <div class="count${goalsByHabit[h.id] ? " goal" : ""}">${goalsByHabit[h.id] ? goalTileText(goalsByHabit[h.id]) : tileMetric(h, count)}</div>`;
   // The <img> is in place now but not yet in the DOM; load its signed URL once the
   // tile has been appended (after this synchronous render pass).
   if (h.type === "buys" && h.photo_path) queueMicrotask(() => loadHabitPhoto(h.id, h.photo_path));
@@ -1613,6 +1771,11 @@ function renderHabitScreen() {
       ${buildTagBreakdown(h)}
 
       <section class="card-section">
+        <h3>Goal</h3>
+        ${buildGoalCard(h)}
+      </section>
+
+      <section class="card-section">
         <h3>Backdate a log</h3>
         <div class="row">
           <input type="datetime-local" id="hs-date" />
@@ -1743,6 +1906,11 @@ function renderHabitScreen() {
     buzz();
     if (await insertEntry(h.id, new Date())) { renderHabitScreen(); render(); }
   });
+
+  const goalSet = panel.querySelector('[data-act="goal-set"]');
+  if (goalSet) goalSet.addEventListener("click", () => openGoalEditor(h));
+  const goalRemove = panel.querySelector('[data-act="goal-remove"]');
+  if (goalRemove) goalRemove.addEventListener("click", () => removeGoal(h));
 
   panel.querySelector('[data-act="backdate"]').addEventListener("click", async () => {
     const v = $("hs-date").value;
@@ -2091,6 +2259,7 @@ async function insertEntry(habitId, when, tag) {
   }).select("id").single();
   if (error) { alert(error.message); return null; }
   (entriesByHabit[habitId] ||= []).push({ id: data.id, at: when, tag: tag || "" });
+  await maybeCompleteGoal(habitId);
   return data;
 }
 
@@ -2132,7 +2301,10 @@ function updateTile(habitId) {
   const badge = tile.querySelector(".due-badge");
   if (badge) badge.textContent = status === "soon" ? "SOON" : "DUE";
   tile.querySelector(".stat").textContent = sinceText(daysSince);
-  tile.querySelector(".count").textContent = tileMetric(h, count);
+  const goal = goalsByHabit[habitId];
+  const countEl = tile.querySelector(".count");
+  countEl.textContent = goal ? goalTileText(goal) : tileMetric(h, count);
+  countEl.classList.toggle("goal", !!goal);
 }
 
 // Big centered checkmark that pops in and fades — used to confirm a save.
