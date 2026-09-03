@@ -103,7 +103,7 @@ const PRED_GRACE = 1.2;   // "Automatic" habit is due once days-since exceeds av
 const isTouch = window.matchMedia("(pointer: coarse)").matches;
 // Build number — keep in lockstep with CACHE in sw.js. Shown on the Notifications
 // screen so you can confirm a deploy actually landed after refreshing.
-const APP_BUILD = "47";
+const APP_BUILD = "48";
 
 // Optional per-habit accent colors. null = fall back to the habit's type color.
 const COLORS = ["#37b26b", "#e5533c", "#f0b429", "#4f8cf5", "#a06cd5", "#26c6da", "#ec6ea6", "#7f8b98"];
@@ -2193,14 +2193,17 @@ function openLogSheet(h, tile) {
   overlay.id = "log-sheet";
   overlay.className = "popover show";
   // When the habit has tags, offer a chip row to pick which subset this log is (e.g.
-  // which restaurant). "No tag" is selected by default so it's always skippable.
+  // which restaurant). If the habit has an active goal, pre-select that goal's tag so a
+  // quick tap counts toward it automatically; otherwise "No tag" is the default.
   const tags = h.tags || [];
+  const goal = goalsByHabit[h.id];
+  const defaultTag = goal ? goal.tag : "";
   const tagRow = tags.length ? `
       <div class="log-tags">
         <span class="log-tags-lbl">Which one?</span>
         <div class="tag-chips">
-          <button type="button" class="tag-chip active" data-tag="">No tag</button>
-          ${tags.map((t) => `<button type="button" class="tag-chip" data-tag="${escapeAttr(t)}">${escapeHtml(t)}</button>`).join("")}
+          <button type="button" class="tag-chip${defaultTag === "" ? " active" : ""}" data-tag="">No tag</button>
+          ${tags.map((t) => `<button type="button" class="tag-chip${t === defaultTag ? " active" : ""}" data-tag="${escapeAttr(t)}">${escapeHtml(t)}</button>`).join("")}
         </div>
       </div>` : "";
   overlay.innerHTML = `
@@ -2215,7 +2218,7 @@ function openLogSheet(h, tile) {
       <button data-act="cancel" class="ghost">Cancel</button>
     </div>`;
   const close = () => overlay.remove();
-  let chosenTag = "";
+  let chosenTag = defaultTag;
   overlay.querySelectorAll(".tag-chip").forEach((b) =>
     b.addEventListener("click", () => {
       overlay.querySelectorAll(".tag-chip").forEach((x) => x.classList.remove("active"));
